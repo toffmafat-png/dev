@@ -8,6 +8,7 @@ Contents:
   README.md
   app.py
   docs/COGNITION.md
+  docs/CREATION_ENGINE.md
   docs/EXTENSION_SDK.md
   docs/FEATURE_MATRIX.md
   docs/INTEGRATIONS.md
@@ -33,6 +34,15 @@ Contents:
   nova/cognition/world_model.py
   nova/config.py
   nova/context_manager.py
+  nova/creation/__init__.py
+  nova/creation/__main__.py
+  nova/creation/engine.py
+  nova/creation/factories.py
+  nova/creation/media_codecs.py
+  nova/creation/qa.py
+  nova/creation/registry.py
+  nova/creation/team.py
+  nova/creation/workspace.py
   nova/data_workspace.py
   nova/db.py
   nova/desktop/__init__.py
@@ -62,6 +72,7 @@ Contents:
   nova/terminal.py
   nova/tools/__init__.py
   nova/tools/calculator.py
+  nova/tools/creation.py
   nova/tools/registry.py
   nova/tools/research.py
   nova/tools/workspace.py
@@ -86,6 +97,7 @@ Contents:
   tests/test_controls.py
   tests/test_cognition.py
   tests/test_cognition_api.py
+  tests/test_creation_engine.py
   tests/test_desktop.py
   tests/test_desktop_ui.py
   tests/test_engine.py
@@ -112,6 +124,11 @@ Notes:
     nova/platform_service.py and documented in docs/PLATFORM_ARCHITECTURE.md,
     docs/EXTENSION_SDK.md, and docs/RELEASE_CHECKLIST.md. The 18-case §114
     integration matrix lives in tests/test_integration_matrix.py.
+  * The §116–§148 Universal Creation Engine lives in nova/creation/ (with tool
+    bindings in nova/tools/creation.py and native Qt studio UI in
+    nova/desktop/app.py), documented in docs/CREATION_ENGINE.md and verified by
+    `python -m nova.creation` (`nova-uce-v1`, 8 end-to-end cases) and
+    tests/test_creation_engine.py.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).

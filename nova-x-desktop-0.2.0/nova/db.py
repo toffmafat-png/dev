@@ -337,6 +337,88 @@ class Database:
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_intel_eval_suite ON intelligence_eval_runs(suite_version, created_at);
+                CREATE TABLE IF NOT EXISTS creation_projects (
+                    id TEXT PRIMARY KEY,
+                    slug TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    domain TEXT NOT NULL,
+                    artifact_type TEXT NOT NULL,
+                    objective TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    project_dir TEXT NOT NULL,
+                    current_version INTEGER NOT NULL DEFAULT 0,
+                    spec_json TEXT NOT NULL DEFAULT '{}',
+                    toolchain_json TEXT NOT NULL DEFAULT '{}',
+                    latest_report_json TEXT NOT NULL DEFAULT '{}',
+                    known_issues_json TEXT NOT NULL DEFAULT '[]',
+                    license TEXT NOT NULL DEFAULT 'MIT',
+                    archived INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_creation_projects_updated ON creation_projects(archived, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_creation_projects_domain ON creation_projects(domain, status);
+                CREATE TABLE IF NOT EXISTS creation_revisions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES creation_projects(id) ON DELETE CASCADE,
+                    version INTEGER NOT NULL,
+                    stage TEXT NOT NULL DEFAULT 'build',
+                    summary TEXT NOT NULL DEFAULT '',
+                    snapshot_dir TEXT NOT NULL DEFAULT '',
+                    artifacts_json TEXT NOT NULL DEFAULT '[]',
+                    qa_json TEXT NOT NULL DEFAULT '{}',
+                    quality_score REAL NOT NULL DEFAULT 0,
+                    retained INTEGER NOT NULL DEFAULT 1,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_creation_revisions_proj ON creation_revisions(project_id, version);
+                CREATE TABLE IF NOT EXISTS creation_assets (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL DEFAULT '',
+                    filename TEXT NOT NULL,
+                    rel_path TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    sha256 TEXT NOT NULL DEFAULT '',
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    parent_asset_id TEXT NOT NULL DEFAULT '',
+                    provenance TEXT NOT NULL DEFAULT 'procedural',
+                    license TEXT NOT NULL DEFAULT 'MIT',
+                    reusable INTEGER NOT NULL DEFAULT 1,
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    usage_notes TEXT NOT NULL DEFAULT '',
+                    preview_rel_path TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_creation_assets_proj ON creation_assets(project_id, media_type);
+                CREATE INDEX IF NOT EXISTS idx_creation_assets_sha ON creation_assets(sha256);
+                CREATE TABLE IF NOT EXISTS creation_blueprints (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL DEFAULT '1.0.0',
+                    domain TEXT NOT NULL,
+                    artifact_type TEXT NOT NULL,
+                    source_project_id TEXT NOT NULL DEFAULT '',
+                    objective TEXT NOT NULL DEFAULT '',
+                    license TEXT NOT NULL DEFAULT 'MIT',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_creation_blueprints_domain ON creation_blueprints(domain, updated_at);
+                CREATE TABLE IF NOT EXISTS creation_runs (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL DEFAULT '',
+                    kind TEXT NOT NULL DEFAULT 'build',
+                    status TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_creation_runs_created ON creation_runs(created_at);
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -1428,6 +1510,359 @@ class Database:
             "cognition_reviews",
             "cognition_decisions",
             "intelligence_eval_runs",
+        )
+        counts: dict[str, int] = {}
+        with self._lock, self._connect() as conn:
+            for table in tables:
+                try:
+                    counts[table] = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                except sqlite3.Error:
+                    counts[table] = 0
+        return counts
+
+    # ------------------------------------------------- Creation Engine (§116–§148)
+
+    def save_creation_project(self, record: dict[str, Any]) -> str:
+        project_id = str(record.get("id") or uuid.uuid4())
+        now = utc_now()
+        created_at = str(record.get("created_at") or now)
+        updated_at = str(record.get("updated_at") or now)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO creation_projects (
+                    id, slug, name, domain, artifact_type, objective, status, project_dir,
+                    current_version, spec_json, toolchain_json, latest_report_json,
+                    known_issues_json, license, archived, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    slug = excluded.slug,
+                    name = excluded.name,
+                    domain = excluded.domain,
+                    artifact_type = excluded.artifact_type,
+                    objective = excluded.objective,
+                    status = excluded.status,
+                    project_dir = excluded.project_dir,
+                    current_version = excluded.current_version,
+                    spec_json = excluded.spec_json,
+                    toolchain_json = excluded.toolchain_json,
+                    latest_report_json = excluded.latest_report_json,
+                    known_issues_json = excluded.known_issues_json,
+                    license = excluded.license,
+                    archived = excluded.archived,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    project_id,
+                    str(record.get("slug") or project_id)[:120],
+                    str(record.get("name") or "Untitled Project")[:200],
+                    str(record.get("domain") or "software")[:64],
+                    str(record.get("artifact_type") or "software_project")[:64],
+                    str(record.get("objective") or "")[:4000],
+                    str(record.get("status") or "draft")[:32],
+                    str(record.get("project_dir") or "")[:1000],
+                    int(record.get("current_version") or 0),
+                    _dump(record.get("spec") or {}),
+                    _dump(record.get("toolchain") or {}),
+                    _dump(record.get("latest_report") or {}),
+                    _dump(record.get("known_issues") or []),
+                    str(record.get("license") or "MIT")[:64],
+                    int(bool(record.get("archived"))),
+                    created_at,
+                    updated_at,
+                ),
+            )
+        return project_id
+
+    @staticmethod
+    def _unpack_creation_project(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["spec"] = json.loads(item.pop("spec_json") or "{}")
+        item["toolchain"] = json.loads(item.pop("toolchain_json") or "{}")
+        item["latest_report"] = json.loads(item.pop("latest_report_json") or "{}")
+        item["known_issues"] = json.loads(item.pop("known_issues_json") or "[]")
+        item["archived"] = bool(item["archived"])
+        return item
+
+    def get_creation_project(self, project_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM creation_projects WHERE id = ?", (project_id,)).fetchone()
+        return self._unpack_creation_project(row) if row is not None else None
+
+    def list_creation_projects(
+        self,
+        *,
+        domain: str = "",
+        include_archived: bool = False,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if not include_archived:
+            clauses.append("archived = 0")
+        if domain:
+            clauses.append("domain = ?")
+            params.append(domain)
+        query = "SELECT * FROM creation_projects"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._unpack_creation_project(row) for row in rows]
+
+    def delete_creation_project(self, project_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute("DELETE FROM creation_projects WHERE id = ?", (project_id,))
+            conn.execute("DELETE FROM creation_assets WHERE project_id = ?", (project_id,))
+            return cursor.rowcount > 0
+
+    def save_creation_revision(self, record: dict[str, Any]) -> str:
+        rev_id = str(record.get("id") or uuid.uuid4())
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO creation_revisions (
+                    id, project_id, version, stage, summary, snapshot_dir,
+                    artifacts_json, qa_json, quality_score, retained, size_bytes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    stage = excluded.stage,
+                    summary = excluded.summary,
+                    snapshot_dir = excluded.snapshot_dir,
+                    artifacts_json = excluded.artifacts_json,
+                    qa_json = excluded.qa_json,
+                    quality_score = excluded.quality_score,
+                    retained = excluded.retained,
+                    size_bytes = excluded.size_bytes
+                """,
+                (
+                    rev_id,
+                    str(record["project_id"]),
+                    int(record.get("version") or 1),
+                    str(record.get("stage") or "build")[:64],
+                    str(record.get("summary") or "")[:500],
+                    str(record.get("snapshot_dir") or "")[:1000],
+                    _dump(record.get("artifacts") or []),
+                    _dump(record.get("qa") or {}),
+                    float(record.get("quality_score") or 0.0),
+                    int(bool(record.get("retained", True))),
+                    int(record.get("size_bytes") or 0),
+                    str(record.get("created_at") or utc_now()),
+                ),
+            )
+        return rev_id
+
+    def list_creation_revisions(self, project_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM creation_revisions WHERE project_id = ? ORDER BY version ASC, created_at ASC LIMIT ?",
+                (project_id, max(1, min(int(limit), 500))),
+            ).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["artifacts"] = json.loads(item.pop("artifacts_json") or "[]")
+            item["qa"] = json.loads(item.pop("qa_json") or "{}")
+            item["retained"] = bool(item["retained"])
+            results.append(item)
+        return results
+
+    def delete_creation_revision(self, rev_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute("DELETE FROM creation_revisions WHERE id = ?", (rev_id,))
+            return cursor.rowcount > 0
+
+    def save_creation_asset(self, record: dict[str, Any]) -> str:
+        asset_id = str(record.get("id") or uuid.uuid4())
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO creation_assets (
+                    id, project_id, filename, rel_path, media_type, sha256, size_bytes,
+                    version, parent_asset_id, provenance, license, reusable,
+                    tags_json, metadata_json, usage_notes, preview_rel_path, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    sha256 = excluded.sha256,
+                    size_bytes = excluded.size_bytes,
+                    version = excluded.version,
+                    provenance = excluded.provenance,
+                    license = excluded.license,
+                    reusable = excluded.reusable,
+                    tags_json = excluded.tags_json,
+                    metadata_json = excluded.metadata_json,
+                    usage_notes = excluded.usage_notes,
+                    preview_rel_path = excluded.preview_rel_path,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    asset_id,
+                    str(record.get("project_id") or "")[:64],
+                    str(record.get("filename") or "")[:260],
+                    str(record.get("rel_path") or "")[:600],
+                    str(record.get("media_type") or "application/octet-stream")[:120],
+                    str(record.get("sha256") or "")[:128],
+                    int(record.get("size_bytes") or 0),
+                    int(record.get("version") or 1),
+                    str(record.get("parent_asset_id") or "")[:64],
+                    str(record.get("provenance") or "procedural")[:64],
+                    str(record.get("license") or "MIT")[:120],
+                    int(bool(record.get("reusable", True))),
+                    _dump(record.get("tags") or []),
+                    _dump(record.get("metadata") or {}),
+                    str(record.get("usage_notes") or "")[:1000],
+                    str(record.get("preview_rel_path") or "")[:600],
+                    str(record.get("created_at") or now),
+                    now,
+                ),
+            )
+        return asset_id
+
+    def list_creation_assets(
+        self,
+        *,
+        project_id: str = "",
+        query: str = "",
+        media_type: str = "",
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if project_id:
+            clauses.append("project_id = ?")
+            params.append(project_id)
+        if media_type:
+            clauses.append("media_type LIKE ?")
+            params.append(f"{media_type}%")
+        if query:
+            clauses.append("(LOWER(filename) LIKE ? OR LOWER(tags_json) LIKE ? OR LOWER(usage_notes) LIKE ?)")
+            needle = f"%{query.lower()}%"
+            params.extend([needle, needle, needle])
+        sql = "SELECT * FROM creation_assets"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["tags"] = json.loads(item.pop("tags_json") or "[]")
+            item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+            item["reusable"] = bool(item["reusable"])
+            results.append(item)
+        return results
+
+    def save_creation_blueprint(self, record: dict[str, Any]) -> str:
+        blueprint_id = str(record.get("id") or uuid.uuid4())
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO creation_blueprints (
+                    id, name, version, domain, artifact_type, source_project_id,
+                    objective, license, payload_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    version = excluded.version,
+                    domain = excluded.domain,
+                    artifact_type = excluded.artifact_type,
+                    objective = excluded.objective,
+                    license = excluded.license,
+                    payload_json = excluded.payload_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    blueprint_id,
+                    str(record.get("name") or "Blueprint")[:200],
+                    str(record.get("version") or "1.0.0")[:32],
+                    str(record.get("domain") or "software")[:64],
+                    str(record.get("artifact_type") or "software_project")[:64],
+                    str(record.get("source_project_id") or "")[:64],
+                    str(record.get("objective") or "")[:2000],
+                    str(record.get("license") or "MIT")[:64],
+                    _dump(record.get("payload") or {}),
+                    str(record.get("created_at") or now),
+                    now,
+                ),
+            )
+        return blueprint_id
+
+    def get_creation_blueprint(self, blueprint_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM creation_blueprints WHERE id = ?", (blueprint_id,)).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["payload"] = json.loads(item.pop("payload_json") or "{}")
+        return item
+
+    def list_creation_blueprints(self, *, domain: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM creation_blueprints"
+        params: list[Any] = []
+        if domain:
+            sql += " WHERE domain = ?"
+            params.append(domain)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item.pop("payload_json") or "{}")
+            results.append(item)
+        return results
+
+    def save_creation_run(self, record: dict[str, Any]) -> str:
+        run_id = str(record.get("id") or uuid.uuid4())
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO creation_runs (id, project_id, kind, status, summary, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    str(record.get("project_id") or "")[:64],
+                    str(record.get("kind") or "build")[:64],
+                    str(record.get("status") or "completed")[:32],
+                    str(record.get("summary") or "")[:1000],
+                    _dump(record.get("payload") or {}),
+                    str(record.get("created_at") or utc_now()),
+                ),
+            )
+        return run_id
+
+    def list_creation_runs(self, *, project_id: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM creation_runs"
+        params: list[Any] = []
+        if project_id:
+            sql += " WHERE project_id = ?"
+            params.append(project_id)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item.pop("payload_json") or "{}")
+            results.append(item)
+        return results
+
+    def creation_stats(self) -> dict[str, int]:
+        tables = (
+            "creation_projects",
+            "creation_revisions",
+            "creation_assets",
+            "creation_blueprints",
+            "creation_runs",
         )
         counts: dict[str, int] = {}
         with self._lock, self._connect() as conn:

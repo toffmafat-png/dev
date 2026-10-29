@@ -83,6 +83,9 @@ jobs:
       - name: Integration Testing Matrix (§114)
         run: python -m pytest tests/test_integration_matrix.py -q
 
+      - name: Universal Creation Capability Suite (§148)
+        run: python -m nova.creation --db "$RUNNER_TEMP/nova-uce.sqlite3" --workspace "$RUNNER_TEMP/nova-uce-ws"
+
       - name: Pytest (full suite)
         run: python -m pytest -q
 

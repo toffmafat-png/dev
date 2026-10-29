@@ -143,6 +143,7 @@ class NovaWindow(QMainWindow):
         self._current_task_id = ""
         self._current_conversation_id = ""
         self._selected_profile_id = ""
+        self._selected_creation_project_id = ""
         self._command_request: dict[str, Any] | None = None
         self._is_refreshing_tasks = False
         self.setWindowTitle("NOVA X — Local Desktop Assistant")
@@ -154,6 +155,7 @@ class NovaWindow(QMainWindow):
         self._build_ui()
         self._refresh_status()
         self._load_conversations()
+        self._refresh_studio()
         self._refresh_tasks()
         self._refresh_models()
         self._refresh_history()
@@ -189,6 +191,7 @@ class NovaWindow(QMainWindow):
         self.nav_buttons: dict[str, QPushButton] = {}
         nav_items = [
             ("chat", "Chat"),
+            ("studio", "Creation studio"),
             ("tasks", "Tasks & plans"),
             ("commands", "Local commands"),
             ("history", "Command history"),
@@ -226,6 +229,7 @@ class NovaWindow(QMainWindow):
         self.pages: dict[str, QWidget] = {}
         builders = [
             ("chat", self._build_chat_page),
+            ("studio", self._build_studio_page),
             ("tasks", self._build_tasks_page),
             ("commands", self._build_commands_page),
             ("history", self._build_history_page),
@@ -251,6 +255,8 @@ class NovaWindow(QMainWindow):
             button.setChecked(name == key)
         if key == "tasks":
             self._refresh_tasks()
+        elif key == "studio":
+            self._refresh_studio()
         elif key == "history":
             self._refresh_history()
         elif key == "models":
@@ -700,6 +706,12 @@ class NovaWindow(QMainWindow):
                 self.eval_tools_button.setEnabled(True)
             elif key == "emergency_stop":
                 self.emergency_button.setEnabled(True)
+            elif key in {"studio_build", "studio_continue", "studio_package"}:
+                self.studio_build_button.setEnabled(True)
+                self.studio_continue_button.setEnabled(True)
+                self.studio_package_button.setEnabled(True)
+                self.studio_progress_pill.setText("FAILED · check error log")
+                self.studio_errors_box.setPlainText(str(result))
             return
 
         if key == "chat":
@@ -764,6 +776,30 @@ class NovaWindow(QMainWindow):
             self._load_conversations()
             self._select_conversation_by_id(self._current_conversation_id)
             self._refresh_chat()
+        elif key == "studio_build":
+            self.studio_build_button.setEnabled(True)
+            self._selected_creation_project_id = str(result.get("project_id", ""))
+            self.studio_progress_pill.setText(
+                f"{str(result.get('status', 'done')).upper()} · v{result.get('version', 1)} · QA {result.get('qa', {}).get('quality_score', 0.0)}"
+            )
+            self._refresh_studio()
+            self._studio_render_project(self._selected_creation_project_id)
+        elif key == "studio_continue":
+            self.studio_continue_button.setEnabled(True)
+            ver = result.get("version") or result.get("retained_version") or 1
+            reverted = " (reverted regression)" if result.get("reverted_regression") else ""
+            self.studio_progress_pill.setText(f"UPDATED v{ver}{reverted} · QA {result.get('qa', {}).get('quality_score', 0.0)}")
+            self._refresh_studio()
+            self._studio_render_project(self._selected_creation_project_id)
+        elif key == "studio_package":
+            self.studio_package_button.setEnabled(True)
+            if result.get("packaged"):
+                self.studio_progress_pill.setText(f"PACKAGED · {result.get('included_file_count', 0)} file(s)")
+                self._show_info(f"Handover archive created:\n{result.get('archive_path')}")
+            else:
+                self.studio_progress_pill.setText("PACKAGE FAILED")
+            self._refresh_studio()
+            self._studio_render_project(self._selected_creation_project_id)
 
     def _show_error(self, text: str) -> None:
         QMessageBox.warning(self, "NOVA X", text[:1800])
@@ -1404,6 +1440,296 @@ class NovaWindow(QMainWindow):
         lines.append(f"Database: {details.get('database_path')}")
         lines.append(f"Workspace roots: {', '.join(details.get('workspace_roots', []))}")
         self.diagnostic_output.setPlainText("\n".join(lines))
+
+    # ---------------------------------------- §146 Universal Creation Studio UI
+
+    def _build_studio_page(self) -> QWidget:
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        layout.addWidget(
+            _page_header(
+                "Creation studio",
+                "Turn natural-language specifications into tested, inspectable software, designs, media, 3D models, data studies, games, and documents.",
+            )
+        )
+
+        # Top row: Prompt, Artifact recognition, Templates, Model selection, Resource & Build status
+        _, prompt_card = _card(layout)
+        top_meta = QHBoxLayout()
+        self.studio_artifact_badge = _label("Artifact: awaiting prompt", "statusPill")
+        self.studio_resource_badge = _label("Resources: probing…", "statusPill")
+        self.studio_progress_pill = _label("IDLE · no build running", "statusPill")
+        top_meta.addWidget(self.studio_artifact_badge)
+        top_meta.addWidget(self.studio_resource_badge)
+        top_meta.addStretch(1)
+        top_meta.addWidget(self.studio_progress_pill)
+        prompt_card.addLayout(top_meta)
+
+        self.studio_prompt = QPlainTextEdit()
+        self.studio_prompt.setPlaceholderText(
+            "Describe the digital product or technical artifact to create (e.g., 'Build a desktop task utility, test it, and package its source')…"
+        )
+        self.studio_prompt.setMaximumHeight(92)
+        self.studio_prompt.textChanged.connect(self._studio_recognize)
+        prompt_card.addWidget(self.studio_prompt)
+
+        selectors = QHBoxLayout()
+        selectors.addWidget(_label("Template / Blueprint", "muted"))
+        self.studio_template_combo = QComboBox()
+        self.studio_template_combo.addItem("Auto-detect from request", "")
+        for dom in ("software", "visual_design", "media", "3d", "game", "web_mobile", "database", "ml", "simulation", "engineering", "education", "business", "document", "integration"):
+            self.studio_template_combo.addItem(f"Domain: {dom}", dom)
+        selectors.addWidget(self.studio_template_combo, 1)
+
+        selectors.addWidget(_label("Model / Provider", "muted"))
+        self.studio_model_combo = QComboBox()
+        self.studio_model_combo.addItem("Local deterministic studio (zero API cost)", "")
+        selectors.addWidget(self.studio_model_combo, 1)
+
+        self.studio_package_check = QCheckBox("Package handover archive")
+        self.studio_package_check.setChecked(True)
+        selectors.addWidget(self.studio_package_check)
+
+        self.studio_build_button = QPushButton("Create & verify deliverable")
+        self.studio_build_button.setProperty("primary", True)
+        self.studio_build_button.clicked.connect(self._studio_build)
+        selectors.addWidget(self.studio_build_button)
+        prompt_card.addLayout(selectors)
+
+        # Middle splitter: Projects + Tool Discovery + Plan on left; Files + QA + Preview + Revisions + Errors on right
+        split = QSplitter(Qt.Orientation.Horizontal)
+
+        left_widget = QWidget()
+        left_col = QVBoxLayout(left_widget)
+        left_col.setContentsMargins(0, 0, 0, 0)
+        left_col.setSpacing(10)
+        _, proj_card = _card(left_col)
+        proj_card.addWidget(_label("Studio projects", "sectionTitle"))
+        self.studio_projects_list = QListWidget()
+        self.studio_projects_list.setMinimumHeight(130)
+        self.studio_projects_list.currentRowChanged.connect(self._studio_select_project)
+        proj_card.addWidget(self.studio_projects_list)
+
+        _, tools_card = _card(left_col)
+        tools_card.addWidget(_label("Available host tools & task plan", "sectionTitle"))
+        self.studio_tools_box = _read_only_text(90)
+        tools_card.addWidget(self.studio_tools_box)
+        self.studio_plan_box = _read_only_text(90)
+        tools_card.addWidget(self.studio_plan_box)
+        split.addWidget(left_widget)
+
+        right_widget = QWidget()
+        right_col = QVBoxLayout(right_widget)
+        right_col.setContentsMargins(0, 0, 0, 0)
+        right_col.setSpacing(10)
+        _, files_card = _card(right_col)
+        files_card.addWidget(_label("Project files, preview & QA results", "sectionTitle"))
+        self.studio_files_table = QTableWidget(0, 3)
+        self.studio_files_table.setHorizontalHeaderLabels(["Path", "Category", "Bytes"])
+        self.studio_files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.studio_files_table.setMinimumHeight(130)
+        files_card.addWidget(self.studio_files_table)
+
+        self.studio_preview_box = _read_only_text(80)
+        files_card.addWidget(self.studio_preview_box)
+        self.studio_tests_box = _read_only_text(90)
+        files_card.addWidget(self.studio_tests_box)
+
+        _, rev_card = _card(right_col)
+        rev_card.addWidget(_label("Continue editing, revisions, packaging & limitations", "sectionTitle"))
+        cont_row = QHBoxLayout()
+        self.studio_continue_input = QLineEdit()
+        self.studio_continue_input.setPlaceholderText("Refinement note or checkpoint continuation instruction…")
+        cont_row.addWidget(self.studio_continue_input, 1)
+        self.studio_continue_button = QPushButton("Continue editing")
+        self.studio_continue_button.clicked.connect(self._studio_continue)
+        cont_row.addWidget(self.studio_continue_button)
+        self.studio_compare_button = QPushButton("Compare revisions")
+        self.studio_compare_button.clicked.connect(self._studio_compare)
+        cont_row.addWidget(self.studio_compare_button)
+        self.studio_package_button = QPushButton("Export handover")
+        self.studio_package_button.clicked.connect(self._studio_package)
+        cont_row.addWidget(self.studio_package_button)
+        self.studio_blueprint_button = QPushButton("Save blueprint")
+        self.studio_blueprint_button.clicked.connect(self._studio_save_blueprint)
+        cont_row.addWidget(self.studio_blueprint_button)
+        rev_card.addLayout(cont_row)
+
+        self.studio_diff_box = _read_only_text(70)
+        rev_card.addWidget(self.studio_diff_box)
+        self.studio_errors_box = _read_only_text(70)
+        rev_card.addWidget(self.studio_errors_box)
+        split.addWidget(right_widget)
+        split.setStretchFactor(0, 2)
+        split.setStretchFactor(1, 3)
+        layout.addWidget(split, 1)
+        return _scrollable(content)
+
+    def _refresh_studio(self) -> None:
+        if not hasattr(self, "studio_tools_box"):
+            return
+        snap = self.runtime.creation_studio_snapshot()
+        budget = snap.get("resource_budget", {})
+        sample = budget.get("sample") or {}
+        self.studio_resource_badge.setText(
+            f"Pressure: {budget.get('pressure', 'normal')} · RAM free ~{sample.get('memory_available_mb', 0)} MB"
+        )
+        installed = snap.get("installed_tools", [])
+        missing = snap.get("missing_optional_tools", [])
+        self.studio_tools_box.setPlainText(
+            f"Installed host tools ({len(installed)}): {', '.join(installed) or 'Python stdlib'}\n"
+            f"Supported formats ({len(snap.get('processable_formats', []))}): {', '.join(snap.get('processable_formats', [])[:14])}\n"
+            f"Optional uninstalled tools: {', '.join(missing[:6]) or 'none'}"
+        )
+
+        self.studio_model_combo.blockSignals(True)
+        current_model = self.studio_model_combo.currentData()
+        self.studio_model_combo.clear()
+        self.studio_model_combo.addItem("Local deterministic studio (zero API cost)", "")
+        for prof in snap.get("models", []):
+            state = "ready" if prof.get("available") else "unconfigured"
+            self.studio_model_combo.addItem(f"{prof.get('name')} ({state})", prof.get("id"))
+        idx = self.studio_model_combo.findData(current_model)
+        if idx >= 0:
+            self.studio_model_combo.setCurrentIndex(idx)
+        self.studio_model_combo.blockSignals(False)
+
+        projects = snap.get("projects", [])
+        self.studio_projects_list.blockSignals(True)
+        self.studio_projects_list.clear()
+        selected_row = -1
+        for row_idx, proj in enumerate(projects):
+            item = QListWidgetItem(f"{proj['name']} [{proj['domain']}] · v{proj['current_version']} · {proj['status']}")
+            item.setData(Qt.ItemDataRole.UserRole, proj["id"])
+            self.studio_projects_list.addItem(item)
+            if proj["id"] == self._selected_creation_project_id:
+                selected_row = row_idx
+        if selected_row >= 0:
+            self.studio_projects_list.setCurrentRow(selected_row)
+        self.studio_projects_list.blockSignals(False)
+
+    def _studio_recognize(self) -> None:
+        raw = self.studio_prompt.toPlainText().strip()
+        if not raw:
+            self.studio_artifact_badge.setText("Artifact: awaiting prompt")
+            self.studio_plan_box.setPlainText("Enter a creation request to preview recognized artifact domain and milestones.")
+            return
+        intent = self.runtime.recognize_creation_intent(raw)
+        self.studio_artifact_badge.setText(f"Artifact: {intent['domain']} / {intent['artifact_type']}")
+        plan_lines = ["Recognized milestones:", *[f"  {m}" for m in intent.get("milestones", [])]]
+        if intent.get("unmet_external_capabilities"):
+            plan_lines.append("\nUnmet external capabilities (will report honestly):")
+            plan_lines.extend(f"  - {u}" for u in intent["unmet_external_capabilities"])
+        self.studio_plan_box.setPlainText("\n".join(plan_lines))
+
+    def _studio_build(self) -> None:
+        prompt = self.studio_prompt.toPlainText().strip()
+        if not prompt:
+            self._show_error("Describe the digital product or artifact you want NOVA X to build.")
+            return
+        domain_override = str(self.studio_template_combo.currentData() or "")
+        self.studio_build_button.setEnabled(False)
+        self.studio_progress_pill.setText("BUILDING & VERIFYING…")
+        self._dispatch(
+            "studio_build",
+            self.runtime.create_deliverable(
+                prompt,
+                domain_override=domain_override,
+                package=self.studio_package_check.isChecked(),
+            ),
+        )
+
+    def _studio_select_project(self, row: int) -> None:
+        if row < 0:
+            return
+        item = self.studio_projects_list.item(row)
+        if item is not None:
+            pid = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            if pid:
+                self._selected_creation_project_id = pid
+                self._studio_render_project(pid)
+
+    def _studio_render_project(self, project_id: str) -> None:
+        if not project_id:
+            return
+        opened = self.runtime.open_creation_project(project_id)
+        if not opened:
+            return
+        explorer = opened.get("explorer") or {}
+        files = explorer.get("files") or []
+        self.studio_files_table.setRowCount(len(files))
+        for r_idx, fmeta in enumerate(files):
+            self.studio_files_table.setItem(r_idx, 0, QTableWidgetItem(str(fmeta.get("path", ""))))
+            self.studio_files_table.setItem(r_idx, 1, QTableWidgetItem(str(fmeta.get("category", ""))))
+            self.studio_files_table.setItem(r_idx, 2, QTableWidgetItem(str(fmeta.get("size_bytes", 0))))
+
+        report = opened.get("latest_report") or {}
+        qa = report.get("qa") or {}
+        pkg = report.get("package") or {}
+        self.studio_preview_box.setPlainText(
+            f"Workspace: {opened.get('project_dir')}\n"
+            f"Primary outputs: {', '.join(report.get('primary_artifacts', [])) or 'none'}\n"
+            f"Handover archive: {pkg.get('archive_path', 'not packaged')}"
+        )
+        checks_lines = [
+            f"QA Passed: {qa.get('passed', False)} · Score: {qa.get('quality_score', 0.0)} ({qa.get('passed_checks', 0)}/{qa.get('total_checks', 0)} checks)"
+        ]
+        for chk in (qa.get("checks") or [])[:12]:
+            mark = "PASS" if chk.get("passed") else "FAIL"
+            checks_lines.append(f"  [{mark}] {chk.get('name')}: {chk.get('detail')}")
+        self.studio_tests_box.setPlainText("\n".join(checks_lines))
+        issues = opened.get("known_issues") or []
+        self.studio_errors_box.setPlainText("\n".join(f"- {lim}" for lim in issues) or "No unresolved defects; host toolchain bounds noted in project spec.")
+
+    def _studio_continue(self) -> None:
+        if not self._selected_creation_project_id:
+            self._show_error("Select a project first.")
+            return
+        note = self.studio_continue_input.text().strip()
+        self.studio_continue_button.setEnabled(False)
+        self.studio_progress_pill.setText("CONTINUING & RE-TESTING…")
+        self._dispatch(
+            "studio_continue",
+            self.runtime.continue_creation_project(self._selected_creation_project_id, note),
+        )
+        self.studio_continue_input.clear()
+
+    def _studio_package(self) -> None:
+        if not self._selected_creation_project_id:
+            self._show_error("Select a project first.")
+            return
+        self.studio_package_button.setEnabled(False)
+        self.studio_progress_pill.setText("PACKAGING HANDOVER…")
+        self._dispatch("studio_package", self.runtime.package_creation_project(self._selected_creation_project_id))
+
+    def _studio_compare(self) -> None:
+        if not self._selected_creation_project_id:
+            self._show_error("Select a project first.")
+            return
+        cmp_res = self.runtime.compare_creation_revisions(self._selected_creation_project_id)
+        if not cmp_res.get("comparable"):
+            self.studio_diff_box.setPlainText(f"Comparison status: {cmp_res.get('reason', 'needs >= 2 revisions')}")
+            return
+        lines = [
+            f"Compared v{cmp_res['version_a']} -> v{cmp_res['version_b']} · QA delta: {cmp_res['score_delta']:+.4f}",
+            *[f"  {c['change'].upper()}: {c['path']}" for c in cmp_res.get("changed_files", [])[:15]],
+        ]
+        for rel_p, diff_txt in list((cmp_res.get("diffs") or {}).items())[:2]:
+            lines.append(f"\n--- Diff: {rel_p} ---\n{diff_txt[:1200]}")
+        self.studio_diff_box.setPlainText("\n".join(lines))
+
+    def _studio_save_blueprint(self) -> None:
+        if not self._selected_creation_project_id:
+            self._show_error("Select a verified project first.")
+            return
+        try:
+            bp = self.runtime.create_blueprint_from_project(self._selected_creation_project_id)
+            self._show_info(f"Saved credential-scrubbed blueprint '{bp['name']}' ({bp['id']} v{bp['version']}).")
+            self._refresh_studio()
+        except Exception as exc:
+            self._show_error(str(exc))
 
     def _emergency_stop(self) -> None:
         if QMessageBox.question(self, "Emergency stop", "Cancel all active tasks and terminate active NOVA child processes? This does not undo changes already made.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:

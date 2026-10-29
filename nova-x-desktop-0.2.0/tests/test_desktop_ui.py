@@ -45,11 +45,31 @@ def test_native_qt_window_builds_all_staged_pages(qapp, tmp_path, monkeypatch):
     try:
         window.show()
         qapp.processEvents()
-        assert len(window.pages) == 8
-        assert window.stack.count() == 8
-        assert set(window.pages) == {"chat", "tasks", "commands", "history", "workspaces", "models", "permissions", "diagnostics"}
+        assert len(window.pages) == 9
+        assert window.stack.count() == 9
+        assert set(window.pages) == {
+            "chat",
+            "studio",
+            "tasks",
+            "commands",
+            "history",
+            "workspaces",
+            "models",
+            "permissions",
+            "diagnostics",
+        }
         assert window.emergency_button.isVisible()
         assert window.pages["commands"] is not None
+        assert window.pages["studio"] is not None
+
+        # Switch to the §146 Creation studio page and verify real recognition & non-fabricated state.
+        window._show_page("studio")
+        qapp.processEvents()
+        assert "IDLE" in window.studio_progress_pill.text()
+        assert "Installed host tools" in window.studio_tools_box.toPlainText()
+        window.studio_prompt.setPlainText("Create a 3D parametric model of a sensor bracket")
+        qapp.processEvents()
+        assert "3d" in window.studio_artifact_badge.text()
     finally:
         window.close()
         if not runtime.closed:

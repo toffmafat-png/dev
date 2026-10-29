@@ -22,6 +22,7 @@ from nova import __version__
 from nova.autonomy import AutonomyPolicy, run_autonomy_benchmark
 from nova.cognition import MIN_CALIBRATION_SAMPLES, PROVENANCES, SUITE_VERSION, suite_manifest
 from nova.config import Settings
+from nova.creation import TechnologyProposal
 from nova.db import Database
 from nova.engine import TERMINAL_STATES, TaskEngine
 from nova.intelligence import INTELLIGENCE_MODES, VALID_MODES, IntelligenceOrchestrator, ModelManager
@@ -430,6 +431,82 @@ def _platform_health(app_state: Any) -> dict[str, Any]:
     return base
 
 
+class CreationRecognizeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    prompt: str = Field(min_length=1, max_length=5_000)
+
+
+class CreationBuildRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    prompt: str = Field(min_length=1, max_length=5_000)
+    name: str = Field(default="", max_length=140)
+    domain_override: str = Field(default="", max_length=64)
+    options: dict[str, Any] = Field(default_factory=dict)
+    package: bool | None = None
+    run_refinement: bool = True
+
+
+class CreationContinueRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    instruction: str = Field(default="", max_length=3_000)
+    action: str = Field(default="refine", max_length=32)
+
+
+class CreationCommandRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command: str = Field(min_length=1, max_length=5_000)
+    project_id: str = Field(default="", max_length=80)
+    source_path: str = Field(default="", max_length=400)
+    target_path: str = Field(default="", max_length=400)
+
+
+class CreationConvertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_rel_path: str = Field(min_length=1, max_length=400)
+    target_rel_path: str = Field(min_length=1, max_length=400)
+
+
+class TechnologyProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=2, max_length=80)
+    name: str = Field(min_length=2, max_length=120)
+    kind: str = Field(default="python_module", max_length=40)
+    domains: list[str] = Field(min_length=1, max_length=8)
+    solves: str = Field(min_length=3, max_length=500)
+    supported_formats: list[str] = Field(default_factory=list, max_length=20)
+    min_ram_mb: int = Field(default=256, ge=16, le=65_536)
+    cpu_cost: str = Field(default="moderate", max_length=24)
+    license: str = Field(default="MIT", max_length=80)
+    replaces_system_libraries: bool = False
+    modifies_apt_repositories: bool = False
+
+
+def _creation_health(app_state: Any) -> dict[str, Any]:
+    """Creation Engine summary for `/api/health` (counts/statuses only, crash-proof)."""
+    base: dict[str, Any] = {
+        "suite_version": "nova-uce-v1",
+        "installed_technologies": 0,
+        "projects": 0,
+        "blueprints": 0,
+        "degraded": True,
+        "detail": "/api/creation/summary",
+    }
+    try:
+        platform_svc = getattr(app_state, "platform", None) or getattr(getattr(app_state, "engine", None), "platform", None)
+        creation_svc = getattr(app_state, "creation", None) or (getattr(platform_svc, "creation", None) if platform_svc is not None else None)
+        if creation_svc is None:
+            return base
+        summary = creation_svc.summary()
+        stats = summary.get("stats") or {}
+        base["installed_technologies"] = int(summary.get("installed_technology_count", 0))
+        base["projects"] = int(stats.get("creation_projects", 0))
+        base["blueprints"] = int(stats.get("creation_blueprints", 0))
+        base["degraded"] = False
+    except Exception:
+        base["degraded"] = True
+    return base
+
+
 def create_app(
     settings: Settings | None = None,
     provider: Any | None = None,
@@ -511,6 +588,7 @@ def create_app(
     app.state.autonomy_policy = autonomy_policy
     app.state.engine = engine
     app.state.platform = engine.platform
+    app.state.creation = engine.platform.creation
     app.state.goal_scheduler_enabled = settings.goal_scheduler_enabled and settings.max_scheduled_goal_runs_per_day > 0
     app.state.goal_scheduler_status = "not_started"
     app.state.goal_scheduler_limit_per_day = settings.max_scheduled_goal_runs_per_day
@@ -605,6 +683,7 @@ def create_app(
             },
             "cognition": _cognition_health(app.state),
             "platform": _platform_health(app.state),
+            "creation": _creation_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -1135,6 +1214,150 @@ def create_app(
             "visual": engine.platform.visual.capabilities(),
             "voice": engine.platform.voice.status(),
         }
+
+    # ---------------------------------------- §116–§148 Universal Creation API
+
+    @app.get("/api/creation/summary")
+    async def get_creation_summary() -> dict[str, Any]:
+        return engine.platform.creation.summary()
+
+    @app.get("/api/creation/discover")
+    async def discover_creation_capabilities(refresh: bool = False) -> dict[str, Any]:
+        return engine.platform.creation.discovery.discover(refresh=refresh)
+
+    @app.get("/api/creation/technologies")
+    async def list_creation_technologies(domain: str = "", installed_only: bool = False, refresh: bool = False) -> dict[str, Any]:
+        return {
+            "technologies": engine.platform.creation.registry.list_technologies(
+                domain=domain,
+                installed_only=installed_only,
+                refresh=refresh,
+            ),
+            "proposals": engine.platform.creation.registry.proposals_history(),
+        }
+
+    @app.post("/api/creation/technologies/evaluate")
+    async def evaluate_creation_technology(body: TechnologyProposalRequest) -> dict[str, Any]:
+        proposal = TechnologyProposal(
+            id=body.id.strip(),
+            name=body.name.strip(),
+            kind=body.kind.strip(),
+            domains=tuple(body.domains),
+            solves=body.solves.strip(),
+            supported_formats=tuple(body.supported_formats),
+            min_ram_mb=body.min_ram_mb,
+            cpu_cost=body.cpu_cost,
+            license=body.license,
+            replaces_system_libraries=body.replaces_system_libraries,
+            modifies_apt_repositories=body.modifies_apt_repositories,
+        )
+        return engine.platform.creation.registry.evaluate_proposal(proposal).to_dict()
+
+    @app.post("/api/creation/recognize")
+    async def recognize_creation_request(body: CreationRecognizeRequest) -> dict[str, Any]:
+        try:
+            return engine.platform.creation.recognize_intent(body.prompt)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/creation/projects")
+    async def list_creation_projects(domain: str = "", include_archived: bool = False, limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
+        return {"projects": database.list_creation_projects(domain=domain, include_archived=include_archived, limit=limit)}
+
+    @app.post("/api/creation/projects", status_code=201)
+    async def create_creation_project(body: CreationBuildRequest) -> dict[str, Any]:
+        try:
+            return await engine.platform.creation.create_from_intent(
+                body.prompt,
+                name=body.name,
+                domain_override=body.domain_override,
+                options=body.options,
+                package=body.package,
+                run_refinement=body.run_refinement,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/creation/projects/{project_id}")
+    async def get_creation_project(project_id: str) -> dict[str, Any]:
+        opened = engine.platform.creation.workspace.open_project(project_id)
+        if opened is None:
+            raise HTTPException(status_code=404, detail="Creation project not found.")
+        return opened
+
+    @app.post("/api/creation/projects/{project_id}/continue")
+    async def continue_creation_project(project_id: str, body: CreationContinueRequest) -> dict[str, Any]:
+        try:
+            return await engine.platform.creation.continue_project(project_id, instruction=body.instruction, action=body.action)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Creation project not found.") from exc
+
+    @app.post("/api/creation/projects/{project_id}/package")
+    async def package_creation_project(project_id: str, archive_format: str = "tar.gz") -> dict[str, Any]:
+        if archive_format not in {"tar.gz", "zip"}:
+            raise HTTPException(status_code=422, detail="archive_format must be 'tar.gz' or 'zip'.")
+        try:
+            return await engine.platform.creation.package_project(project_id, archive_format=archive_format)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Creation project not found.") from exc
+
+    @app.get("/api/creation/projects/{project_id}/compare")
+    async def compare_creation_revisions(project_id: str, version_a: int | None = None, version_b: int | None = None) -> dict[str, Any]:
+        if database.get_creation_project(project_id) is None:
+            raise HTTPException(status_code=404, detail="Creation project not found.")
+        return engine.platform.creation.workspace.lineage.compare_revisions(project_id, version_a=version_a, version_b=version_b)
+
+    @app.get("/api/creation/blueprints")
+    async def list_creation_blueprints(domain: str = "") -> dict[str, Any]:
+        return {"blueprints": database.list_creation_blueprints(domain=domain)}
+
+    @app.post("/api/creation/blueprints/{project_id}", status_code=201)
+    async def promote_project_to_blueprint(project_id: str) -> dict[str, Any]:
+        proj = database.get_creation_project(project_id)
+        if proj is None:
+            raise HTTPException(status_code=404, detail="Creation project not found.")
+        try:
+            return engine.platform.creation.workspace.blueprints.create_from_project(proj)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/creation/assets")
+    async def list_creation_assets(project_id: str = "", query: str = "", reusable_only: bool = False) -> dict[str, Any]:
+        return {"assets": engine.platform.creation.workspace.assets.search(project_id=project_id, query=query, reusable_only=reusable_only)}
+
+    @app.post("/api/creation/convert")
+    async def convert_creation_file(body: CreationConvertRequest) -> dict[str, Any]:
+        ws = settings.workspace_dir.resolve()
+        src = (ws / body.source_rel_path).resolve()
+        dst = (ws / body.target_rel_path).resolve()
+        if not src.is_relative_to(ws) or not dst.is_relative_to(ws):
+            raise HTTPException(status_code=403, detail="Paths must stay inside the approved workspace directory.")
+        if dst.exists():
+            decision = autonomy_policy.decide("workspace.write_file", {"path": body.target_rel_path, "overwrite": True})
+            if not decision.get("approved", False):
+                raise HTTPException(status_code=403, detail="Overwriting an existing workspace file requires explicit authorization.")
+        res = engine.platform.creation.converter.convert(src, dst)
+        if not res.get("converted"):
+            raise HTTPException(status_code=422, detail=str(res.get("error", "Conversion failed.")))
+        return res
+
+    @app.post("/api/creation/command")
+    async def run_creation_command(body: CreationCommandRequest) -> dict[str, Any]:
+        try:
+            return await engine.platform.creation.resolve_command(
+                body.command,
+                project_id=body.project_id,
+                source_path=body.source_path,
+                target_path=body.target_path,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/creation/capability-suite")
+    async def execute_creation_capability_suite() -> dict[str, Any]:
+        return await engine.platform.creation.run_capability_suite()
 
     @app.get("/api/goals")
     async def get_goals() -> dict[str, Any]:
