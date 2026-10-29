@@ -25,6 +25,30 @@ def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
+def _observation_is_stale(row: dict[str, Any]) -> bool:
+    """Answer staleness with the cognition TTL rules rather than a second copy.
+
+    The import is local so ``nova.db`` never depends on the cognition package at
+    module load time; if that package is unavailable the row is simply reported
+    as not stale instead of raising.
+    """
+    try:
+        from nova.cognition.world_model import Observation
+    except ImportError:
+        return False
+    try:
+        return Observation(
+            subject=str(row.get("subject") or ""),
+            predicate=str(row.get("predicate") or ""),
+            value=str(row.get("value") or ""),
+            source=str(row.get("source") or "model_generated"),
+            observed_at=str(row.get("observed_at") or ""),
+            ttl_seconds=row.get("ttl_seconds"),
+        ).is_stale()
+    except (TypeError, ValueError):
+        return False
+
+
 class Database:
     def __init__(self, path: Path | str):
         self.path = Path(path)
@@ -213,6 +237,106 @@ class Database:
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_model_eval_model ON model_eval_runs(model_id, created_at);
+                CREATE TABLE IF NOT EXISTS cognition_observations (
+                    id TEXT PRIMARY KEY,
+                    scope TEXT NOT NULL DEFAULT 'default',
+                    subject TEXT NOT NULL,
+                    predicate TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    ttl_seconds INTEGER,
+                    task_id TEXT NOT NULL DEFAULT '',
+                    evidence_ref TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_cog_obs_key ON cognition_observations(scope, subject, predicate);
+                CREATE INDEX IF NOT EXISTS idx_cog_obs_time ON cognition_observations(observed_at);
+                CREATE TABLE IF NOT EXISTS cognition_predictions (
+                    id TEXT PRIMARY KEY,
+                    scope TEXT NOT NULL DEFAULT 'default',
+                    action TEXT NOT NULL,
+                    expected_json TEXT NOT NULL DEFAULT '{}',
+                    task_id TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    resolved INTEGER NOT NULL DEFAULT 0,
+                    resolved_at TEXT NOT NULL DEFAULT '',
+                    agreement REAL,
+                    matched_json TEXT NOT NULL DEFAULT '[]',
+                    contradicted_json TEXT NOT NULL DEFAULT '[]'
+                );
+                CREATE INDEX IF NOT EXISTS idx_cog_pred_open ON cognition_predictions(scope, resolved);
+                CREATE TABLE IF NOT EXISTS cognition_procedures (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    domain TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    steps_json TEXT NOT NULL DEFAULT '[]',
+                    preconditions_json TEXT NOT NULL DEFAULT '[]',
+                    environment_json TEXT NOT NULL DEFAULT '{}',
+                    tools_required_json TEXT NOT NULL DEFAULT '[]',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    source_task_ids_json TEXT NOT NULL DEFAULT '[]',
+                    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    provenance TEXT NOT NULL DEFAULT 'tool_result',
+                    status TEXT NOT NULL DEFAULT 'candidate',
+                    version INTEGER NOT NULL DEFAULT 1,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    successes INTEGER NOT NULL DEFAULT 0,
+                    supersedes TEXT,
+                    superseded_by TEXT,
+                    correction_reason TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_cog_proc_status ON cognition_procedures(status, updated_at);
+                CREATE TABLE IF NOT EXISTS cognition_calibration (
+                    id TEXT PRIMARY KEY,
+                    confidence REAL NOT NULL,
+                    outcome INTEGER NOT NULL,
+                    statement TEXT NOT NULL DEFAULT '',
+                    domain TEXT NOT NULL DEFAULT '',
+                    task_id TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_cog_cal_domain ON cognition_calibration(domain, created_at);
+                CREATE TABLE IF NOT EXISTS cognition_reviews (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_cog_review_task ON cognition_reviews(task_id, phase);
+                CREATE TABLE IF NOT EXISTS cognition_decisions (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL DEFAULT '',
+                    objective TEXT NOT NULL DEFAULT '',
+                    chosen_option_id TEXT,
+                    short_circuited INTEGER NOT NULL DEFAULT 0,
+                    risk_tolerance TEXT NOT NULL DEFAULT 'routine',
+                    predicted_confidence REAL NOT NULL DEFAULT 0,
+                    predicted_outcome TEXT NOT NULL DEFAULT '',
+                    actual_outcome TEXT,
+                    prediction_matched INTEGER,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_cog_decision_created ON cognition_decisions(created_at);
+                CREATE TABLE IF NOT EXISTS intelligence_eval_runs (
+                    id TEXT PRIMARY KEY,
+                    suite_version TEXT NOT NULL,
+                    commit_ref TEXT NOT NULL DEFAULT '',
+                    include_held_out INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    pass_rate REAL NOT NULL DEFAULT 0,
+                    totals_json TEXT NOT NULL DEFAULT '{}',
+                    cases_json TEXT NOT NULL DEFAULT '{}',
+                    baseline_version TEXT,
+                    regressions_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_intel_eval_suite ON intelligence_eval_runs(suite_version, created_at);
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -928,3 +1052,388 @@ class Database:
         with self._lock, self._connect() as conn:
             cursor = conn.execute("DELETE FROM command_history")
             return int(cursor.rowcount)
+
+    # ------------------------------------------------------------ cognition
+    # Persistence for the mechanisms in nova.cognition. Everything here is
+    # additive: the tables are created by initialize() and each writer accepts
+    # the dataclass-shaped dict produced by the cognition modules, so the
+    # reasoning layer stays free of any database dependency and remains testable
+    # on its own.
+
+    def save_observation(self, record: dict[str, Any]) -> str:
+        """Store one world-model observation. Superseding happens on read."""
+        observation_id = str(record.get("id") or uuid.uuid4())
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO cognition_observations (id, scope, subject, predicate, value, source, "
+                "observed_at, ttl_seconds, task_id, evidence_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    observation_id,
+                    str(record.get("scope") or "default"),
+                    str(record.get("subject") or ""),
+                    str(record.get("predicate") or ""),
+                    str(record.get("value") or ""),
+                    str(record.get("source") or "model_generated"),
+                    str(record.get("observed_at") or utc_now()),
+                    record.get("ttl_seconds"),
+                    str(record.get("task_id") or ""),
+                    str(record.get("evidence_ref") or ""),
+                ),
+            )
+        return observation_id
+
+    def list_observations(
+        self, scope: str = "default", subject: str = "", limit: int = 200, include_history: bool = False
+    ) -> list[dict[str, Any]]:
+        """Most recent value per (subject, predicate), or the full history."""
+        query = "SELECT * FROM cognition_observations WHERE scope = ?"
+        params: list[Any] = [scope]
+        if subject:
+            query += " AND subject = ?"
+            params.append(subject)
+        if not include_history:
+            query += (
+                " AND observed_at = (SELECT MAX(o2.observed_at) FROM cognition_observations o2 "
+                "WHERE o2.scope = cognition_observations.scope AND o2.subject = cognition_observations.subject "
+                "AND o2.predicate = cognition_observations.predicate)"
+            )
+        query += " ORDER BY observed_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 2000)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._observation_row(row) for row in rows]
+
+    @staticmethod
+    def _observation_row(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["stale"] = _observation_is_stale(item)
+        return item
+
+    def save_prediction(self, record: dict[str, Any]) -> str:
+        prediction_id = str(record.get("id") or uuid.uuid4())
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO cognition_predictions (id, scope, action, expected_json, task_id, created_at, "
+                "resolved, resolved_at, agreement, matched_json, contradicted_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    prediction_id,
+                    str(record.get("scope") or "default"),
+                    str(record.get("action") or ""),
+                    _dump(record.get("expected") or {}),
+                    str(record.get("task_id") or ""),
+                    str(record.get("created_at") or utc_now()),
+                    int(bool(record.get("resolved"))),
+                    str(record.get("resolved_at") or ""),
+                    record.get("agreement"),
+                    _dump(record.get("matched") or []),
+                    _dump(record.get("contradicted") or []),
+                ),
+            )
+        return prediction_id
+
+    def list_predictions(self, scope: str = "default", resolved: bool | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        query = "SELECT * FROM cognition_predictions WHERE scope = ?"
+        params: list[Any] = [scope]
+        if resolved is not None:
+            query += " AND resolved = ?"
+            params.append(int(resolved))
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 1000)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._prediction_row(row) for row in rows]
+
+    @staticmethod
+    def _prediction_row(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["expected"] = json.loads(item.pop("expected_json") or "{}")
+        item["matched"] = json.loads(item.pop("matched_json") or "[]")
+        item["contradicted"] = json.loads(item.pop("contradicted_json") or "[]")
+        item["resolved"] = bool(item["resolved"])
+        return item
+
+    def upsert_procedure(self, record: dict[str, Any]) -> str:
+        procedure_id = str(record.get("id") or uuid.uuid4())
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO cognition_procedures (id, name, domain, summary, steps_json, preconditions_json, "
+                "environment_json, tools_required_json, tags_json, source_task_ids_json, evidence_refs_json, "
+                "provenance, status, version, attempts, successes, supersedes, superseded_by, correction_reason, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET name=excluded.name, domain=excluded.domain, summary=excluded.summary, "
+                "steps_json=excluded.steps_json, preconditions_json=excluded.preconditions_json, "
+                "environment_json=excluded.environment_json, tools_required_json=excluded.tools_required_json, "
+                "tags_json=excluded.tags_json, source_task_ids_json=excluded.source_task_ids_json, "
+                "evidence_refs_json=excluded.evidence_refs_json, provenance=excluded.provenance, "
+                "status=excluded.status, version=excluded.version, attempts=excluded.attempts, "
+                "successes=excluded.successes, supersedes=excluded.supersedes, superseded_by=excluded.superseded_by, "
+                "correction_reason=excluded.correction_reason, updated_at=excluded.updated_at",
+                (
+                    procedure_id,
+                    str(record.get("name") or procedure_id)[:200],
+                    str(record.get("domain") or "")[:80],
+                    str(record.get("summary") or "")[:600],
+                    _dump(record.get("steps") or []),
+                    _dump(record.get("preconditions") or []),
+                    _dump(record.get("environment") or {}),
+                    _dump(record.get("tools_required") or []),
+                    _dump(record.get("tags") or []),
+                    _dump(record.get("source_task_ids") or []),
+                    _dump(record.get("evidence_refs") or []),
+                    str(record.get("provenance") or "tool_result"),
+                    str(record.get("status") or "candidate"),
+                    int(record.get("version") or 1),
+                    int(record.get("attempts") or 0),
+                    int(record.get("successes") or 0),
+                    record.get("supersedes"),
+                    record.get("superseded_by"),
+                    str(record.get("correction_reason") or "")[:500],
+                    str(record.get("created_at") or now),
+                    str(record.get("updated_at") or now),
+                ),
+            )
+        return procedure_id
+
+    def list_procedures(self, status: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        query = "SELECT * FROM cognition_procedures"
+        params: list[Any] = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY successes DESC, updated_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 1000)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._procedure_row(row) for row in rows]
+
+    def get_procedure(self, procedure_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM cognition_procedures WHERE id = ?", (procedure_id,)).fetchone()
+        return self._procedure_row(row) if row else None
+
+    def delete_procedure(self, procedure_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute("DELETE FROM cognition_procedures WHERE id = ?", (procedure_id,))
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def _procedure_row(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        for key in ("steps", "preconditions", "tools_required", "tags", "source_task_ids", "evidence_refs"):
+            item[key] = json.loads(item.pop(f"{key}_json") or "[]")
+        item["environment"] = json.loads(item.pop("environment_json") or "{}")
+        attempts = int(item.get("attempts") or 0)
+        successes = int(item.get("successes") or 0)
+        item["success_ratio"] = round(successes / attempts, 4) if attempts else 0.0
+        return item
+
+    def add_calibration_record(
+        self, confidence: float, outcome: bool, *, statement: str = "", domain: str = "", task_id: str = ""
+    ) -> str:
+        record_id = str(uuid.uuid4())
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO cognition_calibration (id, confidence, outcome, statement, domain, task_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record_id,
+                    float(max(0.0, min(1.0, confidence))),
+                    int(bool(outcome)),
+                    str(statement)[:500],
+                    str(domain)[:80],
+                    str(task_id)[:64],
+                    utc_now(),
+                ),
+            )
+        return record_id
+
+    def list_calibration_records(self, domain: str = "", limit: int = 500) -> list[dict[str, Any]]:
+        query = "SELECT * FROM cognition_calibration"
+        params: list[Any] = []
+        if domain:
+            query += " WHERE domain = ?"
+            params.append(domain)
+        query += " ORDER BY created_at ASC LIMIT ?"
+        params.append(max(1, min(int(limit), 5000)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [{**dict(row), "outcome": bool(row["outcome"])} for row in rows]
+
+    def save_review(self, task_id: str, phase: str, payload: dict[str, Any]) -> str:
+        review_id = str(uuid.uuid4())
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO cognition_reviews (id, task_id, phase, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (review_id, str(task_id), str(phase), _dump(payload), utc_now()),
+            )
+        return review_id
+
+    def get_reviews(self, task_id: str, phase: str = "") -> list[dict[str, Any]]:
+        query = "SELECT * FROM cognition_reviews WHERE task_id = ?"
+        params: list[Any] = [task_id]
+        if phase:
+            query += " AND phase = ?"
+            params.append(phase)
+        query += " ORDER BY created_at ASC LIMIT 200"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [{**dict(row), "payload": json.loads(row["payload_json"] or "{}")} for row in rows]
+
+    def save_decision(self, record: dict[str, Any]) -> str:
+        decision_id = str(record.get("id") or uuid.uuid4())
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO cognition_decisions (id, task_id, objective, chosen_option_id, short_circuited, "
+                "risk_tolerance, predicted_confidence, predicted_outcome, actual_outcome, prediction_matched, "
+                "payload_json, created_at, resolved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    decision_id,
+                    str(record.get("task_id") or "")[:64],
+                    str(record.get("objective") or "")[:500],
+                    record.get("chosen_option_id"),
+                    int(bool(record.get("short_circuited"))),
+                    str(record.get("risk_tolerance") or "routine"),
+                    float(record.get("predicted_confidence") or 0.0),
+                    str(record.get("predicted_outcome") or "")[:1000],
+                    record.get("actual_outcome"),
+                    None if record.get("prediction_matched") is None else int(bool(record["prediction_matched"])),
+                    _dump(record.get("payload") or {}),
+                    str(record.get("created_at") or utc_now()),
+                    record.get("resolved_at"),
+                ),
+            )
+        return decision_id
+
+    def resolve_decision(self, decision_id: str, actual_outcome: str, prediction_matched: bool) -> bool:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE cognition_decisions SET actual_outcome = ?, prediction_matched = ?, resolved_at = ? WHERE id = ?",
+                (str(actual_outcome)[:1000], int(bool(prediction_matched)), utc_now(), decision_id),
+            )
+            return cursor.rowcount > 0
+
+    def list_decisions(self, limit: int = 50, unresolved_only: bool = False) -> list[dict[str, Any]]:
+        query = "SELECT * FROM cognition_decisions"
+        if unresolved_only:
+            query += " WHERE resolved_at IS NULL"
+        query += " ORDER BY created_at DESC LIMIT ?"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query, (max(1, min(int(limit), 500)),)).fetchall()
+        results = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item.pop("payload_json") or "{}")
+            item["short_circuited"] = bool(item["short_circuited"])
+            item["prediction_matched"] = None if item["prediction_matched"] is None else bool(item["prediction_matched"])
+            results.append(item)
+        return results
+
+    def create_intelligence_eval_run(
+        self,
+        suite_version: str,
+        status: str,
+        results: dict[str, Any],
+        *,
+        commit_ref: str = "",
+        include_held_out: bool = False,
+        pass_rate: float = 0.0,
+        totals: dict[str, Any] | None = None,
+        cases: dict[str, Any] | None = None,
+        baseline_version: str | None = None,
+        regressions: list[str] | None = None,
+    ) -> str:
+        run_id = str(uuid.uuid4())
+        if totals is None:
+            totals = results.get("totals", {})
+        if cases is None:
+            # A Report dict carries its per-case rows under "results". Persisting
+            # an empty case map would make every later comparison vacuous - the
+            # baseline would report "no regressions" while comparing nothing - so
+            # derive the map instead of silently storing nothing.
+            cases = {
+                str(item.get("id")): {"status": item.get("status"), "capability": item.get("capability")}
+                for item in (results.get("results") or [])
+                if isinstance(item, dict) and item.get("id")
+            }
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO intelligence_eval_runs (id, suite_version, commit_ref, include_held_out, status, "
+                "pass_rate, totals_json, cases_json, baseline_version, regressions_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    str(suite_version)[:64],
+                    str(commit_ref)[:64],
+                    int(bool(include_held_out)),
+                    str(status)[:32],
+                    float(pass_rate),
+                    _dump(totals),
+                    _dump(cases),
+                    baseline_version,
+                    _dump(regressions or results.get("regressions", [])),
+                    utc_now(),
+                ),
+            )
+        return run_id
+
+    def list_intelligence_eval_runs(self, suite_version: str = "", limit: int = 30) -> list[dict[str, Any]]:
+        query = "SELECT * FROM intelligence_eval_runs"
+        params: list[Any] = []
+        if suite_version:
+            query += " WHERE suite_version = ?"
+            params.append(suite_version)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        results = []
+        for row in rows:
+            item = dict(row)
+            item["totals"] = json.loads(item.pop("totals_json") or "{}")
+            item["cases"] = json.loads(item.pop("cases_json") or "{}")
+            item["regressions"] = json.loads(item.pop("regressions_json") or "[]")
+            item["include_held_out"] = bool(item["include_held_out"])
+            results.append(item)
+        return results
+
+    def get_latest_intelligence_baseline(self, suite_version: str) -> dict[str, Any] | None:
+        """The most recent non-held-out run of a suite version, usable as a baseline."""
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM intelligence_eval_runs WHERE suite_version = ? AND include_held_out = 0 "
+                "ORDER BY created_at DESC LIMIT 1",
+                (suite_version,),
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        return {
+            "suite_version": item["suite_version"],
+            "generated_at": item["created_at"],
+            "commit": item["commit_ref"],
+            "include_held_out": False,
+            "pass_rate": item["pass_rate"],
+            "totals": json.loads(item["totals_json"] or "{}"),
+            "cases": json.loads(item["cases_json"] or "{}"),
+        }
+
+    def cognition_stats(self) -> dict[str, Any]:
+        """Row counts for the cognition tables, for the health/setup endpoints."""
+        tables = (
+            "cognition_observations",
+            "cognition_predictions",
+            "cognition_procedures",
+            "cognition_calibration",
+            "cognition_reviews",
+            "cognition_decisions",
+            "intelligence_eval_runs",
+        )
+        counts: dict[str, int] = {}
+        with self._lock, self._connect() as conn:
+            for table in tables:
+                try:
+                    counts[table] = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                except sqlite3.Error:
+                    counts[table] = 0
+        return counts

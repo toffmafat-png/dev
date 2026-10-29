@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 from nova.autonomy import AutonomyPolicy
+from nova.cognition.service import CognitionService
 from nova.config import Settings
 from nova.db import Database
 from nova.provider import ProviderConfigurationError, ProviderError
@@ -50,6 +51,36 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
     return result if isinstance(result, dict) else None
 
 
+def _cognition_context(checkpoint: dict[str, Any]) -> str:
+    """Render the pre-flight assessment into the execution prompt.
+
+    Only what was actually derived is included. If no assessment exists the
+    prompt is unchanged, so this can never invent constraints or criteria.
+    """
+    preflight = (checkpoint.get("cognition") or {}).get("preflight") or {}
+    if not preflight:
+        return ""
+    lines: list[str] = []
+    criteria = [str(item) for item in (preflight.get("acceptance_criteria") or []) if str(item).strip()][:6]
+    if criteria:
+        lines.append("\n\nAcceptance criteria (each needs recorded evidence, not assertion):")
+        lines.extend(f"- {item}" for item in criteria)
+    gaps = [str(item) for item in (preflight.get("blocking_capability_gaps") or []) if str(item).strip()][:4]
+    if gaps:
+        lines.append("\nCapability gaps - state these plainly instead of simulating a result:")
+        lines.extend(f"- {item}" for item in gaps)
+    verification = str(preflight.get("cheapest_verification") or "").strip()
+    if verification:
+        lines.append(f"\nCheapest sufficient verification: {verification}")
+    reinspect = (checkpoint.get("cognition") or {}).get("requires_reinspection") or []
+    if reinspect:
+        lines.append(
+            "\nThese subjects changed since they were last observed - re-check them before relying on them: "
+            + ", ".join(str(item) for item in reinspect[:6])
+        )
+    return "".join(lines)
+
+
 def parse_plan(text: str, objective: str) -> dict[str, Any]:
     parsed = _parse_json_object(text)
     steps: list[str] = []
@@ -77,6 +108,7 @@ class TaskEngine:
         tools: ToolRegistry,
         settings: Settings,
         autonomy_policy: AutonomyPolicy | None = None,
+        cognition: CognitionService | None = None,
     ):
         self.db = db
         self.provider = provider
@@ -85,6 +117,18 @@ class TaskEngine:
         self.autonomy_policy = autonomy_policy or AutonomyPolicy(settings, db, tools)
         self._semaphore = asyncio.Semaphore(settings.max_parallel_tasks)
         self._jobs: dict[str, asyncio.Task[Any]] = {}
+        # The cognition layer observes and assesses; it never authorizes. A
+        # failure inside it is contained by CognitionService so it cannot stop a
+        # task the user asked for.
+        workspace_root = str(getattr(settings, "workspace_dir", "") or "")
+        self.cognition = cognition or CognitionService(
+            db=db,
+            workspace_root=workspace_root,
+            max_provider_requests=int(getattr(settings, "max_ai_requests_per_task", 12) or 12),
+            max_tool_calls=int(getattr(settings, "max_task_steps", 8) or 8),
+            authorized_roots=(workspace_root,) if workspace_root else (),
+            verification_enabled=bool(getattr(settings, "verify_tasks", True)),
+        )
 
     def launch(self, task_id: str) -> None:
         job = self._jobs.get(task_id)
@@ -150,6 +194,7 @@ class TaskEngine:
                     checkpoint["plan"] = plan
                     self.db.update_task(task_id, plan=plan, checkpoint=checkpoint)
                     self.db.add_event(task_id, "plan", plan["summary"], {"steps": plan["steps"]})
+                    self._assess_plan(task_id, task["objective"], plan, checkpoint)
                     task = self.db.get_task(task_id) or task
                     if task["review_plan"] or self.autonomy_policy.get()["level"] == "assisted":
                         checkpoint["waiting_kind"] = "plan_review"
@@ -189,6 +234,7 @@ class TaskEngine:
                             "content": (
                                 f"Objective:\n{task['objective']}\n\nApproved plan:\n"
                                 + "\n".join(f"{i + 1}. {step}" for i, step in enumerate(checkpoint.get("plan", {}).get("steps", [])))
+                                + _cognition_context(checkpoint)
                                 + "\n\nProceed using available tools where useful."
                             ),
                         },
@@ -302,6 +348,10 @@ class TaskEngine:
                     )
                     self.db.add_event(task_id, "verification", note, {"status": verification})
                     self.db.add_event(task_id, "status", "Task completed.", {"verification": verification})
+                    # Completion is written directly rather than through _finish,
+                    # so reflection has to be invoked here too - a successful run
+                    # is exactly the one worth learning from.
+                    self._reflect(task_id, "completed", note, checkpoint)
                     return
             except asyncio.CancelledError:
                 current = self.db.get_task(task_id)
@@ -377,6 +427,12 @@ class TaskEngine:
                     pass
             outcome = ToolOutcome("approval_required", summary, None, approval)
         else:
+            # Record the expectation before the call so the result can falsify it.
+            prediction_id = self._predict_tool_call(task_id, name or "unknown", safe_arguments)
+            if prediction_id:
+                cognition_state = checkpoint.setdefault("cognition", {})
+                cognition_state["pending_prediction"] = prediction_id
+                cognition_state["predictions"] = int(cognition_state.get("predictions", 0)) + 1
             outcome = await self.tools.execute(name, safe_arguments, approved=bool(decision.get("approved", False)))
 
         if outcome.status == "approval_required":
@@ -414,6 +470,7 @@ class TaskEngine:
             "tool": action.get("name", "unknown"),
             **outcome.as_dict(),
         })
+        self._observe_tool_result(task_id, checkpoint, action, outcome)
         elapsed = prior_elapsed + time.monotonic() - run_started
         checkpoint["elapsed_seconds"] = elapsed
         self.db.update_task(
@@ -604,9 +661,131 @@ class TaskEngine:
             cancel_requested=(state == "cancelled"),
         )
         self.db.add_event(task_id, "status", message, {"state": state})
+        if state in TERMINAL_STATES:
+            self._reflect(task_id, state, message, checkpoint)
 
     def _fail(self, task_id: str, message: str, checkpoint: dict[str, Any], run_started: float, prior_elapsed: float) -> None:
         elapsed = prior_elapsed + time.monotonic() - run_started
         checkpoint["elapsed_seconds"] = elapsed
         self.db.update_task(task_id, state="failed", error=message, checkpoint=checkpoint, pause_requested=False)
         self.db.add_event(task_id, "error", message, {"state": "failed"})
+        self._reflect(task_id, "failed", message, checkpoint)
+
+    # ------------------------------------------------------------ cognition
+
+    def _assess_plan(self, task_id: str, objective: str, plan: dict[str, Any], checkpoint: dict[str, Any]) -> None:
+        """Review a plan before execution and make the verdict visible.
+
+        The verdict informs the run and the user; it does not override the user's
+        authorization. A model-derived assessment may not cancel or redefine a
+        task the user asked for, so a "blocked" verdict is reported, persisted
+        and fed into the execution prompt rather than acted on unilaterally.
+        """
+        try:
+            review = self.cognition.review_plan(task_id, objective, plan, tools=self.tools)
+        except Exception as exc:  # a cognition defect must never stop a task
+            logger.warning("plan assessment failed for %s: %s", task_id, exc)
+            return
+        cognition_state = checkpoint.setdefault("cognition", {})
+        cognition_state["preflight"] = {
+            key: review.get(key)
+            for key in (
+                "proceed",
+                "rationale",
+                "confidence",
+                "capability_gaps",
+                "blocking_capability_gaps",
+                "acceptance_criteria",
+                "cheapest_verification",
+                "abandon_conditions",
+                "missing_evidence",
+                "estimated_tool_calls",
+                "estimated_provider_requests",
+            )
+        }
+        self.db.update_task(task_id, checkpoint=checkpoint)
+        verdict = str(review.get("proceed", "proceed"))
+        detail = str(review.get("rationale", ""))[:300]
+        gaps = list(review.get("blocking_capability_gaps") or [])
+        summary = f"Pre-flight review: {verdict}. {detail}"
+        if gaps:
+            summary += f" Blocking capability gaps: {'; '.join(gaps[:3])}"
+        self.db.add_event(
+            task_id,
+            "cognition",
+            summary[:900],
+            {"kind": "preflight", "proceed": verdict, "confidence": review.get("confidence"), "blocking_gaps": gaps},
+        )
+
+    def _predict_tool_call(self, task_id: str, tool_name: str, arguments: dict[str, Any]) -> str:
+        """Register the pre-call expectation. Never allowed to stop the call."""
+        try:
+            return str(self.cognition.predict_tool_call(task_id, tool_name, arguments=arguments) or "")
+        except Exception as exc:  # a cognition defect must never block a tool call
+            logger.warning("cognition prediction failed for %s: %s", task_id, exc)
+            return ""
+
+    def _observe_tool_result(
+        self, task_id: str, checkpoint: dict[str, Any], action: dict[str, Any], outcome: ToolOutcome
+    ) -> None:
+        """Record what actually happened and compare it with the prediction."""
+        cognition_state = checkpoint.setdefault("cognition", {})
+        prediction_id = str(cognition_state.pop("pending_prediction", "") or "")
+        try:
+            recorded = self.cognition.observe_tool_result(
+                task_id,
+                str(action.get("name") or "unknown"),
+                outcome.as_dict(),
+                prediction_id=prediction_id,
+                arguments=action.get("arguments") or {},
+            )
+        except Exception as exc:  # observation is advisory, never load-bearing
+            logger.warning("cognition observation failed for %s: %s", task_id, exc)
+            return
+        cognition_state["observations"] = int(cognition_state.get("observations", 0)) + int(recorded.get("observations") or 0)
+        resolved = recorded.get("resolved")
+        if isinstance(resolved, dict) and int(resolved.get("contradicted") or 0):
+            cognition_state["contradictions"] = int(cognition_state.get("contradictions", 0)) + int(resolved["contradicted"])
+        reinspect = list(recorded.get("reinspection") or [])
+        if reinspect:
+            cognition_state["requires_reinspection"] = reinspect[:20]
+
+    def _reflect(self, task_id: str, state: str, message: str, checkpoint: dict[str, Any]) -> None:
+        """Post-hoc attribution, calibration and procedure learning for one run."""
+        try:
+            task = self.db.get_task(task_id) or {}
+            result = self.cognition.finalize(
+                task_id,
+                state,
+                objective=str(task.get("objective") or ""),
+                checkpoint=checkpoint,
+                verification=str(task.get("verification") or ""),
+                verification_note=str(task.get("verification_note") or message or ""),
+                provider_requests=int(checkpoint.get("request_count", 0) or 0),
+                budget_exhausted=bool(checkpoint.get("budget_exhausted")),
+                tools=self.tools,
+            )
+        except Exception as exc:  # reflection must never mask the real task outcome
+            logger.warning("post-hoc reflection failed for %s: %s", task_id, exc)
+            return
+        posthoc = result.get("posthoc") or {}
+        cause = str(posthoc.get("cause") or "unknown")
+        procedure = result.get("procedure") or {}
+        self.db.add_event(
+            task_id,
+            "cognition",
+            (
+                f"Post-hoc review: cause '{cause}'. "
+                f"Criteria met {result.get('criteria_met', 0)}/{result.get('criteria_total', 0)}. "
+                f"{str(posthoc.get('explanation') or '')[:280]}"
+            )[:900],
+            {
+                "kind": "posthoc",
+                "cause": cause,
+                "criteria_met": result.get("criteria_met"),
+                "criteria_total": result.get("criteria_total"),
+                "predicted_confidence": posthoc.get("predicted_confidence"),
+                "confidence_error": posthoc.get("confidence_error"),
+                "procedure": {key: procedure.get(key) for key in ("action", "procedure_id", "status", "attempts")},
+            },
+        )
