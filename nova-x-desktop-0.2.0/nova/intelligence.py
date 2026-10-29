@@ -37,6 +37,7 @@ _PROVIDER_KEY_ENV_ALLOWED = {
     "xai": {"XAI_API_KEY", "NOVA_XAI_API_KEY"},
     "deepseek": {"DEEPSEEK_API_KEY", "NOVA_DEEPSEEK_API_KEY"},
     "mistral": {"MISTRAL_API_KEY", "NOVA_MISTRAL_API_KEY"},
+    "ollama": {"OLLAMA_API_KEY", "NOVA_OLLAMA_API_KEY", "LOCAL_OLLAMA"},
 }
 _OFFICIAL_HOSTS = {
     "openai": {"api.openai.com"},
@@ -46,6 +47,7 @@ _OFFICIAL_HOSTS = {
     "xai": {"api.x.ai"},
     "deepseek": {"api.deepseek.com"},
     "mistral": {"api.mistral.ai"},
+    "ollama": {"localhost", "127.0.0.1", "::1"},
 }
 
 
@@ -73,7 +75,9 @@ class ModelManager:
         return bool(self.settings.allow_custom_provider_endpoints and self.settings.access_token)
 
     def _validate_profile_endpoint(self, provider_type: str, value: str) -> str:
-        base_url = validate_base_url(value, self.allow_local_http)
+        hostname_hint = (urllib.parse.urlsplit(value.strip()).hostname or "").lower()
+        allow_loopback = self.allow_local_http or (provider_type == "ollama" and hostname_hint in {"localhost", "127.0.0.1", "::1"})
+        base_url = validate_base_url(value, allow_loopback)
         hostname = (urllib.parse.urlsplit(base_url).hostname or "").lower()
         if hostname not in _OFFICIAL_HOSTS.get(provider_type, set()) and not self._custom_endpoints_allowed():
             raise ValueError(
@@ -83,6 +87,8 @@ class ModelManager:
         return base_url
 
     def _validate_profile_key_env(self, provider_type: str, value: str) -> str:
+        if provider_type == "ollama" and not value.strip():
+            return ""
         key_env = validate_key_env(value)
         if key_env not in _PROVIDER_KEY_ENV_ALLOWED.get(provider_type, set()) and not self._custom_endpoints_allowed():
             allowed = ", ".join(sorted(_PROVIDER_KEY_ENV_ALLOWED.get(provider_type, set())))
@@ -150,7 +156,13 @@ class ModelManager:
         provider = PROVIDER_CATALOG.get(profile.get("provider_type", ""), {})
         enabled = bool(profile.get("enabled", True))
         env_name = str(profile.get("api_key_env", ""))
-        key_configured = bool(self.injected_provider) or (bool(os.getenv(env_name, "").strip()) if env_name else False)
+        host_lower = (urllib.parse.urlsplit(str(profile.get("base_url", ""))).hostname or "").lower()
+        local_keyless_ok = profile.get("provider_type") == "ollama" and host_lower in {"localhost", "127.0.0.1", "::1"}
+        key_configured = (
+            bool(self.injected_provider)
+            or local_keyless_ok
+            or (bool(os.getenv(env_name, "").strip()) if env_name else False)
+        )
         endpoint_error = ""
         try:
             if self.injected_provider is not None and profile.get("id") == ENV_PROFILE_ID:

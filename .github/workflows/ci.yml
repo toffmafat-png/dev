@@ -55,7 +55,7 @@ jobs:
         run: node --check static/app.js
 
       - name: Debian packaging scripts are valid shell
-        run: bash -n scripts/build_deb.sh
+        run: bash -n scripts/build_deb.sh scripts/install_user.sh scripts/uninstall_user.sh
 
   test:
     name: Tests (py${{ matrix.python-version }})
@@ -85,6 +85,9 @@ jobs:
 
       - name: Universal Creation Capability Suite (§148)
         run: python -m nova.creation --db "$RUNNER_TEMP/nova-uce.sqlite3" --workspace "$RUNNER_TEMP/nova-uce-ws"
+
+      - name: Unified OS Master Acceptance Suite (§26)
+        run: python -m nova.acceptance
 
       - name: Pytest (full suite)
         run: python -m pytest -q
@@ -180,7 +183,9 @@ jobs:
       - name: Full suite
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -q
+        run: |
+          python -m nova.acceptance
+          python -m pytest -q
 
   package:
     name: Build .deb and verify version

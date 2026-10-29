@@ -192,6 +192,7 @@ class NovaWindow(QMainWindow):
         nav_items = [
             ("chat", "Chat"),
             ("studio", "Creation studio"),
+            ("control_center", "OS control center"),
             ("tasks", "Tasks & plans"),
             ("commands", "Local commands"),
             ("history", "Command history"),
@@ -230,6 +231,7 @@ class NovaWindow(QMainWindow):
         builders = [
             ("chat", self._build_chat_page),
             ("studio", self._build_studio_page),
+            ("control_center", self._build_control_center_page),
             ("tasks", self._build_tasks_page),
             ("commands", self._build_commands_page),
             ("history", self._build_history_page),
@@ -257,6 +259,8 @@ class NovaWindow(QMainWindow):
             self._refresh_tasks()
         elif key == "studio":
             self._refresh_studio()
+        elif key == "control_center":
+            self._refresh_control_center()
         elif key == "history":
             self._refresh_history()
         elif key == "models":
@@ -1730,6 +1734,181 @@ class NovaWindow(QMainWindow):
             self._refresh_studio()
         except Exception as exc:
             self._show_error(str(exc))
+
+    # ---------------------------------------- §22 Unified OS Control Center
+
+    def _build_control_center_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        head_card, head = _card()
+        head_row = QHBoxLayout()
+        head_row.addWidget(_label("Unified OS Control Center (§3–§22)", "title"))
+        head_row.addStretch(1)
+        self.cc_worker_pill = _label("Worker: checking…", "statusPill")
+        head_row.addWidget(self.cc_worker_pill)
+        self.cc_refresh_btn = QPushButton("Refresh")
+        self.cc_refresh_btn.setProperty("quiet", True)
+        self.cc_refresh_btn.clicked.connect(self._refresh_control_center)
+        head_row.addWidget(self.cc_refresh_btn)
+        head.addLayout(head_row)
+        head.addWidget(
+            _label(
+                "One interface over shared memory & FTS5 search, plugins/MCP integrations, voice/visual modalities, "
+                "desktop session control, background worker status, and isolated self-improvement experiments.",
+                "muted",
+                word_wrap=True,
+            )
+        )
+        layout.addWidget(head_card)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        left_card, left = _card()
+        mem_top = QHBoxLayout()
+        mem_top.addWidget(_label("Shared Memory & FTS5 Search (§14)", "sectionTitle"))
+        mem_top.addStretch(1)
+        self.cc_memory_enabled_check = QCheckBox("Memory enabled")
+        self.cc_memory_enabled_check.setChecked(True)
+        self.cc_memory_enabled_check.toggled.connect(self._cc_toggle_memory)
+        mem_top.addWidget(self.cc_memory_enabled_check)
+        left.addLayout(mem_top)
+
+        search_row = QHBoxLayout()
+        self.cc_memory_query = QLineEdit()
+        self.cc_memory_query.setPlaceholderText("Search FTS5 memory & indexed documents…")
+        search_btn = QPushButton("Search")
+        search_btn.clicked.connect(self._cc_search_memory)
+        search_row.addWidget(self.cc_memory_query, 1)
+        search_row.addWidget(search_btn)
+        left.addLayout(search_row)
+
+        self.cc_memory_box = QPlainTextEdit()
+        self.cc_memory_box.setReadOnly(True)
+        left.addWidget(self.cc_memory_box, 1)
+
+        add_row = QHBoxLayout()
+        self.cc_note_subject = QLineEdit()
+        self.cc_note_subject.setPlaceholderText("Preference / context title")
+        self.cc_note_body = QLineEdit()
+        self.cc_note_body.setPlaceholderText("Approved preference or note (secrets rejected)")
+        save_mem_btn = QPushButton("Save note")
+        save_mem_btn.clicked.connect(self._cc_save_preference)
+        add_row.addWidget(self.cc_note_subject, 1)
+        add_row.addWidget(self.cc_note_body, 2)
+        add_row.addWidget(save_mem_btn)
+        left.addLayout(add_row)
+        splitter.addWidget(left_card)
+
+        right_card, right = _card()
+        right.addWidget(_label("Plugins, MCP, Desktop Session & Multimodal (§10–§16)", "sectionTitle"))
+        self.cc_ecosystem_box = QPlainTextEdit()
+        self.cc_ecosystem_box.setReadOnly(True)
+        self.cc_ecosystem_box.setMaximumHeight(175)
+        right.addWidget(self.cc_ecosystem_box)
+
+        ptt_row = QHBoxLayout()
+        self.cc_ptt_input = QLineEdit()
+        self.cc_ptt_input.setPlaceholderText("Push-to-talk / voice loopback test phrase…")
+        ptt_btn = QPushButton("Push-to-talk check")
+        ptt_btn.setProperty("quiet", True)
+        ptt_btn.clicked.connect(self._cc_push_to_talk_check)
+        ptt_row.addWidget(self.cc_ptt_input, 1)
+        ptt_row.addWidget(ptt_btn)
+        right.addLayout(ptt_row)
+
+        right.addWidget(_label("Architecture, Worker & Self-Improvement (§17, §20)", "sectionTitle"))
+        self.cc_system_box = QPlainTextEdit()
+        self.cc_system_box.setReadOnly(True)
+        right.addWidget(self.cc_system_box, 1)
+        splitter.addWidget(right_card)
+
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        layout.addWidget(splitter, 1)
+        return page
+
+    def _refresh_control_center(self) -> None:
+        snap = self.runtime.control_center_snapshot()
+        worker = snap["worker"]
+        self.cc_worker_pill.setText(f"Worker: {worker['status'].upper()}")
+        mem = snap["memory"]
+        self.cc_memory_enabled_check.blockSignals(True)
+        self.cc_memory_enabled_check.setChecked(bool(mem["memory_enabled"]))
+        self.cc_memory_enabled_check.blockSignals(False)
+
+        mem_lines = [
+            f"FTS5: {mem['fts5_available']} · Retention/category: {mem['retention_per_category']} · Stored entries: {len(mem['entries'])}",
+            *[
+                f"- [{e['category']}] {e['subject']} ({'verified' if e['verified_fact'] else e['provenance']}): {e['content'][:110]}"
+                for e in mem["entries"][:15]
+            ],
+        ]
+        self.cc_memory_box.setPlainText("\n".join(mem_lines))
+
+        ds = snap["desktop_session"]
+        voice = snap["voice"]
+        visual = snap["visual"]
+        eco_lines = [
+            f"Desktop session: {ds['display_server']} (interactive_ready={ds['interactive_ready']}, adapters={', '.join(ds['available_adapters']) or 'none'})",
+            f"Voice modality: enabled={voice.get('enabled')}, mic_active={voice.get('microphone_active')}, speaker_id_privileged=False",
+            f"Visual modality: capture_available={visual.get('capture_available')}, ocr_available={visual.get('ocr_available')}, continuous=False",
+            f"Plugins installed: {len(snap['plugins'])} · Integrations: {len(snap['integrations'])} · MCP servers: {len(snap['mcp_servers'])}",
+        ]
+        for plg in snap["plugins"][:6]:
+            eco_lines.append(f"  • Plugin {plg.get('name')} ({plg.get('version')}) — enabled={plg.get('enabled')}")
+        self.cc_ecosystem_box.setPlainText("\n".join(eco_lines))
+
+        exps = snap["experiments"]
+        arch_mods = snap["architecture"]["modules"]
+        sys_lines = [
+            f"12 Unified Modules Active · Non-root={not snap['architecture']['running_as_root']} · Resource pressure={snap['resources']['pressure']}",
+            f"Background note: {worker['honesty_note']}",
+            f"Scheduled goals: {len(snap['goals'])} · Self-improvement experiments: {len(exps)} (auto_overwrite_stable=False)",
+            *[f"  • {k}: {v['module']}" for k, v in list(arch_mods.items())[:6]],
+        ]
+        self.cc_system_box.setPlainText("\n".join(sys_lines))
+
+    def _cc_toggle_memory(self, checked: bool) -> None:
+        self.runtime.platform.memory.set_enabled(bool(checked))
+        self._refresh_control_center()
+
+    def _cc_search_memory(self) -> None:
+        q = self.cc_memory_query.text().strip()
+        if not q:
+            self._refresh_control_center()
+            return
+        res = self.runtime.platform.memory.retrieve_relevant_context(q, max_chars=2_000, limit=8)
+        self.cc_memory_box.setPlainText(res["formatted_context"] or "No matching FTS5 memory or document chunks.")
+
+    def _cc_save_preference(self) -> None:
+        subj = self.cc_note_subject.text().strip()
+        body = self.cc_note_body.text().strip()
+        if not subj or not body:
+            self._show_error("Provide both a preference title and content.")
+            return
+        try:
+            self.runtime.platform.memory.store(
+                category="user_preferences",
+                subject=subj,
+                content=body,
+                provenance="user_approved_preference",
+                evidence_verified=True,
+            )
+            self.cc_note_subject.clear()
+            self.cc_note_body.clear()
+            self._refresh_control_center()
+        except Exception as exc:
+            self._show_error(str(exc))
+
+    def _cc_push_to_talk_check(self) -> None:
+        phrase = self.cc_ptt_input.text().strip() or "Check system diagnostics"
+        status = self.runtime.platform.voice.status()
+        self.cc_system_box.appendPlainText(
+            f"\n[Voice Push-to-Talk] Typed fallback ready for '{phrase[:80]}' · mic_enabled={status.get('enabled')} · speaker_auth_allowed=False"
+        )
 
     def _emergency_stop(self) -> None:
         if QMessageBox.question(self, "Emergency stop", "Cancel all active tasks and terminate active NOVA child processes? This does not undo changes already made.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:

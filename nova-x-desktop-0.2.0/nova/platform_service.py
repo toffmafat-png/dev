@@ -19,11 +19,13 @@ from nova.context_manager import ContextOptimizer
 from nova.creation.engine import UniversalCreationEngine
 from nova.data_workspace import DataWorkspace
 from nova.db import Database
+from nova.desktop_control import LinuxDesktopController, build_desktop_control_tools
 from nova.devtools import DeveloperWorkspace
 from nova.events import Event, EventBus
 from nova.governance import PrivacyGovernor, SystemHealthCenter
 from nova.knowledge import KnowledgeStore
 from nova.mcp_client import IntegrationGateway, IntegrationRecord, MCPClientManager
+from nova.memory_hub import SharedMemorySystem
 from nova.modalities import (
     DeterministicLoopbackRecognizer,
     DeterministicLoopbackSynthesizer,
@@ -34,9 +36,11 @@ from nova.observability import Redactor, TraceCollector
 from nova.plugins import PluginManager, builtin_sdk_examples
 from nova.resources import ResourceManager
 from nova.sandbox import Sandbox
+from nova.self_improvement import ControlledImprovementEngine
 from nova.terminal import TerminalWorkspace
 from nova.tools.creation import build_creation_tools
 from nova.tools.registry import ToolRegistry
+from nova.unified_os import UnifiedOperatingKernel
 from nova.updates import MODE_ONLINE, MODE_PROVIDER_UNAVAILABLE, OfflineCoordinator, UpdateManager
 from nova.workflows import CrossAppCoordinator, WorkflowEngine
 
@@ -82,6 +86,10 @@ class PlatformService:
     privacy: PrivacyGovernor = field(init=False)
     health_center: SystemHealthCenter = field(init=False)
     creation: UniversalCreationEngine = field(init=False)
+    desktop_control: LinuxDesktopController = field(init=False)
+    memory: SharedMemorySystem = field(init=False)
+    improvement: ControlledImprovementEngine = field(init=False)
+    unified_os: UnifiedOperatingKernel = field(init=False)
 
     def __post_init__(self) -> None:
         data_dir = Path(self.settings.data_dir)
@@ -221,6 +229,29 @@ class PlatformService:
             if self.tools.get(creation_tool.name) is None:
                 self.tools.register(creation_tool)
 
+        self.desktop_control = LinuxDesktopController(
+            workspace_root_fn=lambda: Path(self.settings.workspace_dir),
+            permission_check=self.autonomy_policy.decide,
+        )
+        for d_tool in build_desktop_control_tools(self.desktop_control):
+            if self.tools.get(d_tool.name) is None:
+                self.tools.register(d_tool)
+
+        self.memory = SharedMemorySystem(
+            db=self.db,
+            knowledge=self.knowledge,
+            redactor=self.redactor,
+        )
+        self.improvement = ControlledImprovementEngine(
+            db=self.db,
+            data_dir=data_dir,
+            stable_root=workspace_dir,
+        )
+        self.unified_os = UnifiedOperatingKernel(
+            db=self.db,
+            platform=self,
+        )
+
     def _register_baseline_integrations(self) -> None:
         self.gateway.register(
             IntegrationRecord(
@@ -290,6 +321,9 @@ class PlatformService:
             "event_bus": self.events.stats(),
             "observability": self.traces.stats(),
             "creation": self.creation.summary(),
+            "memory_enabled": self.memory.is_enabled(),
+            "desktop_session": self.desktop_control.inspect_session().display_server,
+            "worker_status": self.unified_os.worker.status()["status"],
             "recommendations": [item.to_dict() for item in recommendation_catalogue()],
         }
 
