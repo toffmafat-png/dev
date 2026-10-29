@@ -20,6 +20,10 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("desktop", help="Open the native desktop window (default)")
     subparsers.add_parser("diagnostics", help="Print local setup diagnostics as JSON")
     subparsers.add_parser("setup", help="Run non-root Kali Linux environment & capability verification")
+    hw = subparsers.add_parser("hardware", help="Search discovered Linux hardware & driver status (§149)")
+    hw.add_argument("--query", default="", help="Optional hardware filter query")
+    srvs = subparsers.add_parser("servers", help="List registered OpenSSH servers & health (§157)")
+    srvs.add_argument("--audit", action="store_true", help="Run read-only OpenSSH health check across registered servers")
     worker = subparsers.add_parser("worker", help="Run optional user-level background goal/task worker")
     worker.add_argument("--once", action="store_true", help="Run one scheduled-goal check tick and exit")
     worker.add_argument("--poll-seconds", type=int, default=15, help="Polling interval in seconds (5–300)")
@@ -156,6 +160,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime.close()
     if args.action == "worker":
         return _run_worker(bool(args.once), int(args.poll_seconds))
+    if args.action == "hardware":
+        runtime = DesktopRuntime()
+        try:
+            print(json.dumps(runtime.system_access.hardware.search(args.query, refresh=True), indent=2, default=str))
+            return 0
+        finally:
+            runtime.close()
+    if args.action == "servers":
+        runtime = DesktopRuntime()
+        try:
+            payload = (
+                runtime.system_access.servers.multi_server_audit()
+                if args.audit
+                else {"servers": runtime.system_access.servers.list_servers()}
+            )
+            print(json.dumps(payload, indent=2, default=str))
+            return 0
+        finally:
+            runtime.close()
     if args.action == "exec":
         if not 1 <= args.timeout <= 600:
             parser.error("--timeout must be between 1 and 600 seconds")

@@ -17,6 +17,7 @@ Contents:
   docs/RELEASE_CHECKLIST.md
   docs/ROADMAP.md
   docs/SECURITY.md
+  docs/SYSTEM_ACCESS.md
   docs/TESTING.md
   docs/UNIFIED_OS.md
   nova/__init__.py
@@ -74,12 +75,23 @@ Contents:
   nova/sandbox.py
   nova/sandbox_child.py
   nova/self_improvement.py
+  nova/system_access/__init__.py
+  nova/system_access/acceptance.py
+  nova/system_access/hardware.py
+  nova/system_access/helper_cli.py
+  nova/system_access/observability_net.py
+  nova/system_access/privilege.py
+  nova/system_access/recording.py
+  nova/system_access/remote.py
+  nova/system_access/resilience.py
+  nova/system_access/service.py
   nova/terminal.py
   nova/tools/__init__.py
   nova/tools/calculator.py
   nova/tools/creation.py
   nova/tools/registry.py
   nova/tools/research.py
+  nova/tools/system_access.py
   nova/tools/workspace.py
   nova/unified_os.py
   nova/updates.py
@@ -90,6 +102,7 @@ Contents:
   packaging/debian/nova-x-worker.service
   packaging/debian/nova-x.desktop
   packaging/debian/nova-x.svg
+  packaging/polkit/org.novax.pkexec.helper.policy
   pyproject.toml
   requirements-dev.txt
   requirements.txt
@@ -118,6 +131,7 @@ Contents:
   tests/test_platform_stack.py
   tests/test_provider.py
   tests/test_regressions.py
+  tests/test_system_access_expansion.py
   tests/test_tools.py
   tests/test_unified_os_acceptance.py
 
@@ -143,10 +157,15 @@ Notes:
   * The §1–§27 Unified Universal AI Operating System is unified by
     nova/unified_os.py, nova/memory_hub.py, nova/desktop_control.py,
     nova/self_improvement.py, optional local Ollama support in
-    nova/model_providers.py, the 10-page native Qt Control Center in
+    nova/model_providers.py, the 11-page native Qt Control Center in
     nova/desktop/app.py, and the 18-check acceptance suite in nova/acceptance.py
     (`python -m nova.acceptance` and tests/test_unified_os_acceptance.py),
     documented in docs/UNIFIED_OS.md.
+  * The §149–§164 System Access, Hardware Intelligence, Resilience, Segmented
+    Screen Studio, Observability, and Authorized OpenSSH/Node subsystem lives in
+    nova/system_access/ and nova/tools/system_access.py, documented in
+    docs/SYSTEM_ACCESS.md and verified by `python -m nova.system_access.acceptance`
+    and tests/test_system_access_expansion.py.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).

@@ -193,6 +193,7 @@ class NovaWindow(QMainWindow):
             ("chat", "Chat"),
             ("studio", "Creation studio"),
             ("control_center", "OS control center"),
+            ("infrastructure", "Hardware & servers"),
             ("tasks", "Tasks & plans"),
             ("commands", "Local commands"),
             ("history", "Command history"),
@@ -232,6 +233,7 @@ class NovaWindow(QMainWindow):
             ("chat", self._build_chat_page),
             ("studio", self._build_studio_page),
             ("control_center", self._build_control_center_page),
+            ("infrastructure", self._build_infrastructure_page),
             ("tasks", self._build_tasks_page),
             ("commands", self._build_commands_page),
             ("history", self._build_history_page),
@@ -261,6 +263,8 @@ class NovaWindow(QMainWindow):
             self._refresh_studio()
         elif key == "control_center":
             self._refresh_control_center()
+        elif key == "infrastructure":
+            self._refresh_infrastructure()
         elif key == "history":
             self._refresh_history()
         elif key == "models":
@@ -1909,6 +1913,116 @@ class NovaWindow(QMainWindow):
         self.cc_system_box.appendPlainText(
             f"\n[Voice Push-to-Talk] Typed fallback ready for '{phrase[:80]}' · mic_enabled={status.get('enabled')} · speaker_auth_allowed=False"
         )
+
+    def _build_infrastructure_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.addWidget(
+            _page_header(
+                "Hardware, Screen Studio, Resilience & Authorized Servers",
+                "Real Linux hardware explorer (§149), driver intelligence (§150), visible segmented screen studio (§155), startup/recovery controls (§153–§154), and pinned-key OpenSSH servers (§157).",
+            )
+        )
+
+        top_bar = QHBoxLayout()
+        self.infra_rec_pill = _label("Recording: IDLE", "statusPill")
+        top_bar.addWidget(self.infra_rec_pill)
+        self.infra_recovery_pill = _label("Safe Recovery: OFF", "statusPill")
+        top_bar.addWidget(self.infra_recovery_pill)
+        top_bar.addStretch(1)
+        shot_btn = QPushButton("Capture screenshot")
+        shot_btn.clicked.connect(self._infra_capture_screenshot)
+        top_bar.addWidget(shot_btn)
+        self.infra_rec_toggle_btn = QPushButton("Start segmented recording")
+        self.infra_rec_toggle_btn.setProperty("primary", True)
+        self.infra_rec_toggle_btn.clicked.connect(self._infra_toggle_recording)
+        top_bar.addWidget(self.infra_rec_toggle_btn)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._refresh_infrastructure)
+        top_bar.addWidget(refresh_btn)
+        layout.addLayout(top_bar)
+
+        _, hw_card = _card(layout)
+        search_row = QHBoxLayout()
+        self.infra_hw_search = QLineEdit()
+        self.infra_hw_search.setPlaceholderText("Filter Hardware Explorer by device ID, bus, driver, or status…")
+        self.infra_hw_search.returnPressed.connect(self._refresh_infrastructure)
+        search_row.addWidget(self.infra_hw_search, 1)
+        diag_btn = QPushButton("Run driver & firmware check")
+        diag_btn.clicked.connect(self._infra_diagnose_drivers)
+        search_row.addWidget(diag_btn)
+        hw_card.addLayout(search_row)
+        self.infra_hw_box = _read_only_text(170)
+        hw_card.addWidget(self.infra_hw_box)
+
+        _, ops_card = _card(layout)
+        ops_card.addWidget(_label("Observability, Startup Disclosures & Registered OpenSSH Servers", "sectionTitle"))
+        self.infra_ops_box = _read_only_text(180)
+        ops_card.addWidget(self.infra_ops_box)
+        return page
+
+    def _refresh_infrastructure(self) -> None:
+        query = self.infra_hw_search.text().strip() if hasattr(self, "infra_hw_search") else ""
+        snap = self.runtime.infrastructure_snapshot(query)
+        ind = snap["recording_session"]["active_indicator"]
+        if ind.get("recording_active"):
+            self.infra_rec_pill.setText(f"Recording: {ind.get('badge_text', '● REC')}")
+            self.infra_rec_toggle_btn.setText("Stop recording")
+        else:
+            self.infra_rec_pill.setText("Recording: IDLE")
+            self.infra_rec_toggle_btn.setText("Start segmented recording")
+
+        spol = snap["startup_policy"]
+        self.infra_recovery_pill.setText(
+            f"Safe Recovery: {'ON (automations paused)' if spol.get('safe_recovery_mode') else 'OFF'}"
+        )
+
+        hw = snap["hardware"]
+        hw_lines = [
+            f"Discovered {hw['total_discovered']} Linux hardware/subsystem records ({hw['match_count']} shown):",
+            *[
+                f"  • [{d['status_category'].upper()}] {d['device_id']} — {d['name']} | driver={d['driver'] or 'none'} | tier={d['privilege_tier']}"
+                for d in hw["results"][:18]
+            ],
+        ]
+        self.infra_hw_box.setPlainText("\n".join(hw_lines))
+
+        obs = snap["observability"]
+        srvs = snap["servers"]
+        ops_lines = [
+            f"Telemetry ({obs['collection_overhead_ms']} ms): CPU load_1m={obs['cpu']['load_1m']} · RAM avail={obs['memory']['available_mb']} MB · Disk free={obs['disk']['free_gb']} GB · Alerts={snap['alerts']['triggered_count']}",
+            f"Privileged Helper: pkexec_available={snap['privileged']['pkexec_available']} · allowlisted_ops={len(snap['privileged']['defined_operations'])} · root_ui=False",
+            f"Startup Policy ({spol['current_user']}): auto_restore_tasks={spol['policy']['auto_restore_interrupted_tasks']} · user_worker_login={spol['policy']['start_user_worker_at_login']}",
+            f"Registered SSH Servers ({len(srvs)}): " + (", ".join(f"{s['alias']} ({s['hostname']}:{s['port']} · {s['connection_health']})" for s in srvs) or "none configured"),
+            f"Screen Studio Recordings: {len(snap['recordings'])} saved session(s) · session_type={snap['recording_session']['session_type']}",
+        ]
+        self.infra_ops_box.setPlainText("\n".join(ops_lines))
+
+    def _infra_diagnose_drivers(self) -> None:
+        q = self.infra_hw_search.text().strip()
+        diag = self.runtime.system_access.drivers.diagnose(device_id=q)
+        self.infra_hw_box.appendPlainText(
+            f"\n[Driver Intelligence · kernel {diag['kernel_release']}] "
+            f"loaded_modules={diag['loaded_module_count']} · log_access={diag['kernel_log_access']} · "
+            f"findings={len(diag['findings'])} · candidate_repairs={len(diag['candidate_repairs'])}"
+        )
+
+    def _infra_capture_screenshot(self) -> None:
+        shot = self.runtime.system_access.recording_studio.capture_screenshot(capture_mode="full_screen")
+        self.infra_ops_box.appendPlainText(
+            f"\n[Screenshot] Saved {shot['path']} ({shot['size_bytes']} bytes via {shot['capture_backend']})."
+        )
+
+    def _infra_toggle_recording(self) -> None:
+        studio = self.runtime.system_access.recording_studio
+        ind = studio.get_indicator_state()
+        if ind.get("recording_active") and ind.get("active_recording_id"):
+            studio.stop_recording(str(ind["active_recording_id"]))
+        else:
+            studio.start_recording(title="Desktop Studio Capture", fps=10, user_initiated=True)
+        self._refresh_infrastructure()
 
     def _emergency_stop(self) -> None:
         if QMessageBox.question(self, "Emergency stop", "Cancel all active tasks and terminate active NOVA child processes? This does not undo changes already made.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:

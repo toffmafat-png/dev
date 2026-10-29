@@ -60,8 +60,9 @@ def capability_status_matrix(runtime: DesktopRuntime) -> dict[str, list[dict[str
     vis_st = runtime.platform.visual.capabilities()
 
     implemented = [
-        {"capability": "Native PySide6/Qt 10-page Control Center & CLI (`nova-x`)", "module": "nova.desktop"},
+        {"capability": "Native PySide6/Qt 11-page Control Center & CLI (`nova-x`)", "module": "nova.desktop"},
         {"capability": "12-module Unified Operating Kernel & 11-stage creation pipeline", "module": "nova.unified_os"},
+        {"capability": "Hardware Explorer, Driver Intelligence, Privileged Helper, Screen Studio, WAL Recovery & OpenSSH Server Admin (§149–§164)", "module": "nova.system_access"},
         {"capability": "General Intelligence & Epistemic Reasoning Core (§70–§89)", "module": "nova.cognition"},
         {"capability": "Multi-provider cloud gateway + optional local Ollama HTTP adapter", "module": "nova.model_providers"},
         {"capability": "Persistent DAG TaskEngine, WorkflowEngine & BackgroundWorkerSupervisor", "module": "nova.engine / nova.workflows"},
@@ -203,7 +204,7 @@ async def run_acceptance_suite(repo_root: Path | None = None) -> dict[str, Any]:
                 qapp = QApplication.instance() or QApplication([])
                 win = NovaWindow(runtime, UiBridge())
                 qapp.processEvents()
-                ok_1 = len(win.pages) == 10 and "control_center" in win.pages and "studio" in win.pages
+                ok_1 = len(win.pages) == 11 and "control_center" in win.pages and "studio" in win.pages and "infrastructure" in win.pages
                 win.hide()
                 detail_1 = f"Qt NovaWindow initialized live with {len(win.pages)} wired pages."
             except ImportError as exc:
@@ -215,6 +216,7 @@ async def run_acceptance_suite(repo_root: Path | None = None) -> dict[str, Any]:
                 ok_1 = (
                     '("control_center", self._build_control_center_page)' in app_src
                     and '("studio", self._build_studio_page)' in app_src
+                    and '("infrastructure", self._build_infrastructure_page)' in app_src
                     and len(snap["architecture"]["modules"]) == 12
                 )
                 detail_1 = f"DesktopRuntime + ControlCenter backend initialized cleanly; Qt widget import skipped on headless container ({exc})."
