@@ -1,0 +1,65 @@
+NOVA X Desktop 0.2.0 — source bundle
+
+Contents:
+  .dockerignore
+  .env.example
+  .gitignore
+  Dockerfile
+  README.md
+  app.py
+  docs/FEATURE_MATRIX.md
+  docs/INTEGRATIONS.md
+  docs/NATIVE_DESKTOP.md
+  docs/ROADMAP.md
+  docs/SECURITY.md
+  docs/TESTING.md
+  nova/__init__.py
+  nova/autonomy.py
+  nova/config.py
+  nova/db.py
+  nova/desktop/__init__.py
+  nova/desktop/app.py
+  nova/desktop/cli.py
+  nova/desktop/commands.py
+  nova/desktop/policy.py
+  nova/desktop/runtime.py
+  nova/desktop/secrets.py
+  nova/engine.py
+  nova/intelligence.py
+  nova/main.py
+  nova/model_providers.py
+  nova/provider.py
+  nova/tools/__init__.py
+  nova/tools/calculator.py
+  nova/tools/registry.py
+  nova/tools/research.py
+  nova/tools/workspace.py
+  packaging/debian/README.Debian
+  packaging/debian/control
+  packaging/debian/nova-x.desktop
+  packaging/debian/nova-x.svg
+  pyproject.toml
+  pytest.ini
+  requirements-dev.txt
+  requirements.txt
+  scripts/build_deb.sh
+  static/app.js
+  static/index.html
+  static/styles.css
+  tests/__init__.py
+  tests/conftest.py
+  tests/test_api.py
+  tests/test_autonomy.py
+  tests/test_config.py
+  tests/test_controls.py
+  tests/test_desktop.py
+  tests/test_desktop_ui.py
+  tests/test_engine.py
+  tests/test_goals.py
+  tests/test_intelligence.py
+  tests/test_model_providers.py
+  tests/test_provider.py
+  tests/test_tools.py
+
+Excluded: generated caches, local databases/workspaces, credentials, and built release binaries.
+Build instructions: README.md and docs/NATIVE_DESKTOP.md.

@@ -1,0 +1,14 @@
+Package: nova-x-desktop
+Version: 0.2.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: python3 (>= 3.11), python3-httpx (>= 0.27), python3-pydantic (>= 2.8), python3-keyring (>= 23), python3-pyside6.qtcore, python3-pyside6.qtgui, python3-pyside6.qtwidgets
+Maintainer: NOVA X contributors
+Description: Local-first native Linux desktop assistant
+ NOVA X is a local desktop assistant with a native Qt interface, SQLite task and
+ command history, scoped workspaces, structured process execution, explicit
+ approval gates, and optional cloud-model API profiles.
+ .
+ Provider credentials are kept in a Linux Secret Service keyring. Commands run
+ as the logged-in user by default. No daemon or network listener is installed.

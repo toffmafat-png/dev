@@ -1,0 +1,32 @@
+NOVA X native desktop package
+==============================
+
+The launcher is /usr/bin/nova-x. It opens a native PySide6/Qt window and does
+not start a browser or web server. `nova-x diagnostics` prints local setup
+checks, and `nova-x exec -- PROGRAM ARG...` runs a structured local command.
+
+The application runs as the logged-in user. It does not store sudo passwords,
+start a daemon, or listen on a network port. Privileged task actions use pkexec
+and the system polkit agent only after a separate NOVA approval.
+
+Provider keys are stored in the logged-in desktop's Secret Service keyring. A
+working and unlocked Secret Service provider is required to save keys. If the
+keyring is unavailable, NOVA refuses plaintext fallbacks. Chat and task model
+requests are not sent until the user explicitly submits work or starts a test.
+
+Per-user data is stored under $XDG_DATA_HOME/nova-x (normally
+~/.local/share/nova-x); the default workspace is ~/NOVA-X-workspace. SQLite and
+NOVA-created command logs are private to the account. Extra workspace paths
+must be deliberately selected in the application.
+
+Scheduled/background operation, a continuously running service, desktop
+automation, microphone access, and self-modification are not implemented by
+this package. Tasks stop when the app exits. Diagnostics do not make network
+requests.
+
+This package was built and its metadata, extracted tree, Python imports/syntax,
+and non-GUI CLI execution were checked in a Debian 13 sandbox. The sandbox had
+no active desktop, keyring, polkit agent, or PySide6 installation, so the Qt
+window, Secret Service unlock flow, privileged actions, and installation on a
+Kali host were not exercised here. Confirm package compatibility and install
+only on the intended Kali machine.

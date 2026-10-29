@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b111c">
+  <title>NOVA X — Personal AI OS</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="Main navigation">
+      <a class="brand" href="#command" aria-label="NOVA X home">
+        <span class="brand-mark"><span></span><span></span><span></span></span>
+        <span class="brand-word">NOVA<span class="brand-x">X</span><small>PERSONAL AI OS</small></span>
+      </a>
+      <div class="workspace-switcher">
+        <span class="workspace-glyph">⌘</span>
+        <span><strong>My workspace</strong><small>Personal environment</small></span>
+        <span class="chevron">⌄</span>
+      </div>
+      <div class="nav-label">WORKSPACE</div>
+      <nav class="main-nav">
+        <button class="nav-item active" data-view="command" aria-current="page"><span class="nav-icon">◈</span><span>Command center</span><span class="nav-key">⌘ K</span></button>
+        <button class="nav-item" data-view="tasks"><span class="nav-icon">▤</span><span>Tasks & plans</span><span class="nav-count" id="navTaskCount">0</span></button>
+        <button class="nav-item" data-view="goals"><span class="nav-icon">◎</span><span>Goals & schedules</span></button>
+        <button class="nav-item" data-view="tools"><span class="nav-icon">⌘</span><span>Tools</span></button>
+        <button class="nav-item" data-view="models"><span class="nav-icon">✳</span><span>Models & intelligence</span></button>
+        <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span><span>Settings</span></button>
+      </nav>
+      <div class="sidebar-divider"></div>
+      <div class="nav-label">CAPABILITIES</div>
+      <div class="capability-list">
+        <div class="capability"><span class="cap-dot available"></span><span>Safe workspace tools</span><span class="cap-state">READY</span></div>
+        <div class="capability"><span class="cap-dot" id="researchDot"></span><span>Web research</span><span class="cap-state" id="researchState">OPTIONAL</span></div>
+        <div class="capability"><span class="cap-dot muted"></span><span>Local companion</span><span class="cap-state">PLANNED</span></div>
+      </div>
+      <div class="sidebar-bottom">
+        <div class="resource-card"><span class="resource-icon">⌁</span><div><strong>Low-resource mode</strong><small>Single-worker · lean UI</small></div><span class="toggle-dot" id="lowResourceDot"></span></div>
+        <button class="profile-button" id="profileButton"><span class="profile-avatar">N</span><span><strong>NOVA X</strong><small id="authLabel">Local session</small></span><span class="profile-more">···</span></button>
+      </div>
+    </aside>
+
+    <main class="main-shell">
+      <header class="topbar">
+        <button class="icon-button mobile-menu" id="mobileMenu" aria-label="Open navigation">☰</button>
+        <div class="breadcrumbs"><span>Personal AI OS</span><span class="slash">/</span><strong id="pageTitle">Command center</strong></div>
+        <div class="topbar-actions">
+          <div class="connection-indicator"><span class="pulse-dot" id="connectionDot"></span><span id="connectionLabel">Checking system</span></div>
+          <span class="topbar-divider"></span>
+          <button class="icon-button" id="themeButton" title="Toggle light and dark theme" aria-label="Toggle theme">◐</button>
+          <button class="icon-button" id="emergencyButton" title="Cancel all active tasks" aria-label="Emergency stop">⏹</button>
+        </div>
+      </header>
+
+      <div class="page-container">
+        <section class="view active" id="view-command" aria-labelledby="commandHeading">
+          <div class="page-intro">
+            <div class="eyebrow"><span class="eyebrow-line"></span> YOUR PERSONAL AI OPERATING SYSTEM</div>
+            <div class="intro-row">
+              <div><h1 id="commandHeading">Make progress on<br><span>what matters.</span></h1><p class="intro-copy">Think, research, build, and get authorized work done — with a clear plan and an auditable trail.</p></div>
+              <div class="intro-meta"><span class="orbit-mark">✳</span><div><strong id="todayLabel">READY WHEN YOU ARE</strong><small>Plans, actions, evidence. No pretend work.</small></div></div>
+            </div>
+          </div>
+          <div class="command-layout">
+            <section class="panel command-panel" aria-label="NOVA command input">
+              <div class="panel-heading">
+                <div class="panel-heading-title"><span class="sparkle">✳</span><div><strong>Command NOVA</strong><small>Ask a question or launch an autonomous task</small></div></div>
+                <span class="secure-tag"><span>●</span> CONTROLLED</span>
+              </div>
+              <div class="chat-log" id="chatLog" role="log" aria-live="polite" aria-label="Conversation">
+                <div class="welcome-message" id="welcomeMessage">
+                  <div class="nova-avatar"><span class="brand-mark small"><span></span><span></span><span></span></span></div>
+                  <div class="welcome-copy"><strong>Good to have you here.</strong><p>What would you like to accomplish? I can plan work, use the tools shown in this workspace, and report what actually happened.</p><span class="welcome-note"><i></i> Tools and permissions stay visible at every step.</span></div>
+                </div>
+              </div>
+              <div class="quick-prompts" aria-label="Suggested commands">
+                <button class="prompt-chip" data-prompt="Calculate 18% of 2450 and show the arithmetic."><span>∑</span> Calculate something</button>
+                <button class="prompt-chip" data-prompt="Inspect the files in my NOVA workspace and summarize what is there."><span>▧</span> Inspect workspace</button>
+                <button class="prompt-chip" data-prompt="Create a concise project brief in my workspace for building a personal study planner."><span>✎</span> Create a project brief</button>
+              </div>
+              <form class="composer" id="chatForm">
+                <label class="sr-only" for="messageInput">Message NOVA</label>
+                <textarea id="messageInput" rows="2" maxlength="12000" placeholder="Tell NOVA what you want to accomplish…" required></textarea>
+                <div class="composer-footer">
+                  <div class="composer-hints"><span class="kbd">↵</span> to send <span class="hint-divider">·</span> <span class="kbd">⇧ ↵</span> for a new line</div>
+                  <div class="composer-actions">
+                    <label class="mode-picker" for="intelligenceMode"><span>Mode</span><select id="intelligenceMode" aria-label="Intelligence mode"><option value="balanced">Balanced</option><option value="fast">Fast</option><option value="frontier_fusion">Frontier Fusion</option><option value="maximum_intelligence">Maximum Intelligence</option></select></label>
+                    <label class="review-toggle" title="Pause after NOVA creates a plan so you can edit it before execution"><input id="reviewPlanToggle" type="checkbox"><span class="toggle-track"></span><span>Review plan</span></label>
+                    <button class="button button-soft" type="button" id="runTaskButton"><span class="button-symbol">▶</span> Run task</button>
+                    <button class="button button-primary" type="submit">Ask NOVA <span class="button-arrow">↗</span></button>
+                  </div>
+                </div>
+              </form>
+              <div class="panel-footnote"><span class="lock-symbol">▣</span> Chat answers do not run tools. Choose <strong>Run task</strong> for authorized actions.</div>
+            </section>
+
+            <aside class="right-rail">
+              <section class="rail-card system-card">
+                <div class="rail-heading"><span>System status</span><button class="text-button" data-view="settings">Details ↗</button></div>
+                <div class="system-model"><span class="model-orb">N</span><div><strong id="modelName">AI provider not configured</strong><small id="modelHost">Add a server-side provider key</small></div></div>
+                <div class="status-lines">
+                  <div><span><i class="status-led" id="providerLed"></i> AI inference</span><b id="providerStatus">NOT SET</b></div>
+                  <div><span><i class="status-led green"></i> Workspace sandbox</span><b>ACTIVE</b></div>
+                  <div><span><i class="status-led" id="searchLed"></i> Web search</span><b id="searchStatus">OPTIONAL</b></div>
+                </div>
+                <div class="model-usage"><span>Observed tokens</span><strong id="tokenCount">0</strong><small>Provider-reported · no cost estimate</small></div>
+              </section>
+              <section class="rail-card activity-card">
+                <div class="rail-heading"><span>Recent tasks</span><button class="text-button" data-view="tasks">View all ↗</button></div>
+                <div id="recentTasks" class="recent-task-list"><div class="empty-state small-empty">Your task activity will appear here.</div></div>
+              </section>
+              <div class="honesty-card"><span class="honesty-icon">◉</span><div><strong>Grounded by design</strong><p>NOVA reports limits clearly. A generated answer isn't proof an action succeeded.</p></div></div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="view" id="view-tasks" aria-labelledby="tasksHeading">
+          <div class="view-title-row"><div><div class="eyebrow"><span class="eyebrow-line"></span> EXECUTION TRACE</div><h1 id="tasksHeading">Tasks & <span>plans</span></h1><p class="view-subtitle">Review plans, watch tool outcomes, pause work, or cancel at any time.</p></div><button class="button button-primary" id="newTaskButton">＋ New task</button></div>
+          <div class="tasks-layout"><div class="panel task-list-panel"><div class="panel-heading"><div class="panel-heading-title"><span class="panel-icon">▤</span><div><strong>Task history</strong><small id="taskListCount">0 tasks</small></div></div><button class="icon-button compact" id="refreshTasks" aria-label="Refresh tasks">↻</button></div><div id="allTasks" class="task-list"><div class="empty-state">No tasks yet. Start one from the command center.</div></div></div>
+            <div class="panel task-detail-panel" id="taskDetail"><div class="empty-detail"><div class="empty-detail-mark">◈</div><h3>Select a task</h3><p>Plans, evidence, and controls will be shown here.</p></div></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-goals" aria-labelledby="goalsHeading">
+          <div class="view-title-row"><div><div class="eyebrow"><span class="eyebrow-line"></span> USER-CONFIGURED PROACTIVE WORK</div><h1 id="goalsHeading">Goals & <span>schedules</span></h1><p class="view-subtitle">NOVA runs only objectives you save here. Every run becomes a task with the same autonomy policy, approval gates, limits, and evidence trail.</p></div><button class="button button-soft" id="refreshGoals">↻ Refresh</button></div>
+          <div class="goal-scheduler-notice" id="goalSchedulerNotice">Checking scheduler status…</div>
+          <div class="goals-layout">
+            <section class="panel goal-form-panel"><div class="panel-heading"><div class="panel-heading-title"><span class="panel-icon">＋</span><div><strong id="goalFormTitle">Configure a goal</strong><small>Schedules are opt-in; “Run now” is always manual</small></div></div></div>
+              <form id="goalForm" class="goal-form">
+                <input type="hidden" id="editingGoalId">
+                <label>Goal name<input id="goalNameInput" type="text" maxlength="80" required placeholder="e.g. Weekly study review"></label>
+                <label>Objective<textarea id="goalObjectiveInput" rows="5" maxlength="5000" required placeholder="Describe the bounded, authorized work NOVA should do. Do not include passwords or API keys."></textarea></label>
+                <label>Schedule<select id="goalInterval"><option value="60">Hourly</option><option value="1440" selected>Daily</option><option value="10080">Weekly</option></select></label>
+                <label class="goal-enable"><input id="goalEnabledInput" type="checkbox"><span>Enable automatic schedule</span></label>
+                <small class="goal-help">Enabled goals run only while the server process is awake. Missed times are skipped (no catch-up burst). A daily run cap and per-task provider/tool limits apply; model or research calls may cost money. High-impact actions still wait for approval.</small>
+                <div class="goal-form-actions"><button class="button button-primary" type="submit" id="saveGoalButton">Save goal</button><button class="button button-outline" type="button" id="cancelGoalEdit" hidden>Cancel edit</button></div>
+                <div class="form-error" id="goalFormError" role="alert"></div>
+              </form>
+            </section>
+            <section class="panel goals-list-panel"><div class="panel-heading"><div class="panel-heading-title"><span class="panel-icon">◎</span><div><strong>Configured goals</strong><small id="goalListCount">0 goals</small></div></div></div><div id="goalList" class="goal-list"><div class="empty-state">No goals saved. Add one to define what proactive work is allowed.</div></div></section>
+          </div>
+          <div class="notice-panel"><span class="notice-icon">◉</span><div><strong>Honest scheduler boundary</strong><p>This is a lightweight in-process scheduler backed by SQLite, not an always-on hosted worker. Hosting sleep, restarts, multiple uncoordinated replicas, or missing provider credentials can delay or fail work. Inspect each generated task; NOVA will not invent goals or represent a planned run as completed.</p></div></div>
+        </section>
+
+        <section class="view" id="view-tools" aria-labelledby="toolsHeading">
+          <div class="view-title-row"><div><div class="eyebrow"><span class="eyebrow-line"></span> CAPABILITY REGISTRY</div><h1 id="toolsHeading">Tools & <span>integrations</span></h1><p class="view-subtitle">Only registered, available tools are offered to the task agent. Missing credentials are shown honestly.</p></div></div>
+          <div id="toolGrid" class="tool-grid"><div class="empty-state">Loading tool registry…</div></div>
+          <div class="notice-panel"><span class="notice-icon">ⓘ</span><div><strong>Security boundary</strong><p>Tools run on the server inside defined scopes. Content returned from files or websites is treated as untrusted data, never as permission.</p></div></div>
+        </section>
+
+        <section class="view" id="view-models" aria-labelledby="modelsHeading">
+          <div class="view-title-row"><div><div class="eyebrow"><span class="eyebrow-line"></span> MODEL REGISTRY · CONTROLLED ROUTING</div><h1 id="modelsHeading">Models & <span>intelligence</span></h1><p class="view-subtitle">Connect authorized API endpoints, inspect live model catalogs, route by capability, and compare bounded runs. Secrets stay in the server environment.</p></div><button class="button button-soft" id="refreshModels">↻ Refresh registry</button></div>
+          <div class="model-summary" id="modelSummary"><div class="empty-state">Loading provider registry…</div></div>
+          <div class="mode-section"><div class="section-heading"><div><h2>Choose an intelligence mode</h2><p>Fusion calls independent models in parallel, checks disagreements, then synthesizes. Agreement is not proof.</p></div></div><div class="mode-grid" id="modeCards"></div></div>
+          <div class="model-dashboard-grid">
+            <section class="panel model-registry-panel"><div class="panel-heading"><div class="panel-heading-title"><span class="panel-icon">✳</span><div><strong>Configured models</strong><small id="modelListSubtitle">Manual selection or adaptive routing</small></div></div><button class="icon-button compact" id="refreshModelList" aria-label="Refresh models">↻</button></div><div class="model-selection-note">Select up to three models for manual routing, or leave all unchecked for adaptive selection. Catalog checks validate identifiers; inference tests send a small request.</div><div id="modelCards" class="model-cards"><div class="empty-state">Loading models…</div></div></section>
+            <section class="panel model-form-panel"><div class="panel-heading"><div class="panel-heading-title"><span class="panel-icon">＋</span><div><strong id="modelFormTitle">Add a provider profile</strong><small>Credential reference only — no key input</small></div></div></div>
+              <form id="modelProfileForm" class="model-form">
+                <input type="hidden" id="editingModelId">
+                <label>Provider type<select id="modelProviderType" required></select></label>
+                <label>Display name<input id="modelNameInput" type="text" required maxlength="100" placeholder="e.g. Team Anthropic API"></label>
+                <label>Model identifier<input id="modelIdInput" type="text" required maxlength="200" placeholder="Choose from the live provider catalog"></label>
+                <label>Authorized API base URL<input id="modelBaseUrl" type="url" required maxlength="500" placeholder="https://api.provider.example/v1"></label>
+                <label>Server-side credential variable<input id="modelKeyEnv" type="text" required maxlength="64" placeholder="PROVIDER_API_KEY" autocomplete="off"></label>
+                <div class="form-help">Add the secret under this environment-variable name in your host's secret manager, then restart NOVA. Never paste a key here. Use only endpoints you are authorized to access.</div>
+                <div class="capability-checks"><label><input id="capabilityChat" type="checkbox" checked disabled> Chat</label><label><input id="capabilityTools" type="checkbox"> Tool calling (enable only after validating this model)</label></div>
+                <div class="form-two-col"><label>Context window, tokens<input id="modelContextWindow" type="number" min="0" max="10000000" step="1" placeholder="Unknown"></label><label>Routing priority, 0–100<input id="modelPriority" type="number" min="0" max="100" value="50"></label></div>
+                <div class="form-two-col"><label>Input price, USD / 1M tokens<input id="modelInputCost" type="number" min="0" step="any" placeholder="Optional; check provider pricing"></label><label>Output price, USD / 1M tokens<input id="modelOutputCost" type="number" min="0" step="any" placeholder="Optional; check provider pricing"></label></div>
+                <div class="form-help">Pricing is operator-entered and not live-synced. Fusion's USD ceiling is enforced only when every participating model has current rates configured; otherwise cost is explicitly unknown.</div>
+                <div class="form-toggle-row"><label><input id="modelEnabled" type="checkbox" checked> Enabled</label><label><input id="modelIsDefault" type="checkbox"> Set as primary</label></div>
+                <div class="model-form-actions"><button class="button button-primary" type="submit" id="saveModelButton">Save model profile</button><button class="button button-outline" type="button" id="cancelModelEdit" hidden>Cancel edit</button></div>
+                <div class="form-error" id="modelFormError" role="alert"></div>
+              </form>
+            </section>
+          </div>
+          <section class="panel catalog-panel" id="modelCatalogPanel" hidden><div class="panel-heading"><div class="panel-heading-title"><span class="panel-icon">⌕</span><div><strong>Live provider catalog</strong><small id="catalogSubtitle">Validated metadata, not a promise of account entitlement</small></div></div><button class="icon-button compact" id="closeCatalog" aria-label="Close model catalog">×</button></div><div id="modelCatalogList" class="catalog-list"></div></section>
+          <section class="panel evaluation-panel"><div class="panel-heading"><div class="panel-heading-title"><span class="panel-icon">✓</span><div><strong>Evaluation baseline</strong><small>Versioned deterministic checks; no automatic production changes</small></div></div></div><div class="evaluation-copy">Run three potentially billable checks per configured model: exact instruction following, strict JSON output, and a synthetic tool-call schema. Tool-call checks never execute a tool; a passed check is required before NOVA routes real tools to that model. Scores do not prove truth or general safety.</div><div id="evaluationHistory" class="evaluation-history"><div class="empty-state small-empty">No evaluation runs yet.</div></div></section>
+          <div class="notice-panel"><span class="notice-icon">◉</span><div><strong>Measured improvement, not self-training</strong><p>NOVA records provider latency, failures, token counts, operator-entered cost estimates, evaluation scores, and optional feedback. It does not modify model weights, train on private chats, or silently rewrite production code or security controls. Candidate-code isolation and rollback remain an operator-reviewed roadmap item.</p></div></div>
+        </section>
+
+        <section class="view" id="view-settings" aria-labelledby="settingsHeading">
+          <div class="view-title-row"><div><div class="eyebrow"><span class="eyebrow-line"></span> CONFIGURATION</div><h1 id="settingsHeading">System <span>settings</span></h1><p class="view-subtitle">Provider keys and secrets stay server-side. Configure through environment variables or your hosting secret manager.</p></div><button class="button button-soft" id="logoutButton" hidden>Sign out</button></div>
+          <div class="settings-grid">
+            <section class="panel settings-card setup-card"><div class="panel-heading"><div class="panel-heading-title"><span class="panel-icon">✓</span><div><strong>Bootstrap checklist</strong><small>Read-only setup checks · no secrets are returned</small></div></div><button class="icon-button compact" id="refreshSetup" aria-label="Refresh setup checklist">↻</button></div><div id="setupChecklist" class="setup-checklist"><div class="empty-state small-empty">Checking local configuration…</div></div></section>
+            <section class="panel settings-card"><div class="panel-heading"><div class="panel-heading-title"><span class="panel-icon">✧</span><div><strong>AI provider registry</strong><small>Multiple official APIs and compatible endpoints</small></div></div><span class="state-pill" id="settingsProviderPill">NOT CONFIGURED</span></div><div class="settings-content"><div class="setting-row"><div><strong>Model</strong><small id="settingsModel">Not connected</small></div><span class="setting-value" id="settingsProviderHost">—</span></div><div class="setting-row"><div><strong>Credential storage</strong><small>Server environment only</small></div><span class="setting-value positive">Protected</span></div><div class="code-block"><div class="code-header"><span>Local .env settings</span><span>SERVER SIDE ONLY</span></div><code>AI_BASE_URL=https://api.openai.com/v1<br>AI_MODEL=&lt;model available to your account&gt;<br>AI_API_KEY=&lt;secret&gt;</code></div><p class="fine-print">NOVA makes no AI request until a key is configured. Provider inference may cost money and model availability depends on your account. Never put an API key in browser code.</p></div></section>
+            <section class="panel settings-card"><div class="panel-heading"><div class="panel-heading-title"><span class="panel-icon">⛨</span><div><strong>Security & access</strong><small>Authentication, scopes, and emergency controls</small></div></div></div><div class="settings-content"><div class="setting-row"><div><strong>Access protection</strong><small id="authModeText">Local open mode</small></div><span class="setting-value" id="authModeBadge">LOCAL</span></div><div class="security-bullets"><p><i>✓</i> Workspace files are restricted to the configured folder.</p><p><i>✓</i> Existing file replacement pauses for approval and creates a backup unless a narrow overwrite scope is configured.</p><p><i>✓</i> Tool calls, retries, runtime, and concurrency are bounded.</p><p><i>✓</i> No shell, browser login, email send, or system-control tool is exposed.</p></div><div class="setting-actions"><button class="button button-outline" id="emergencySettingsButton">⏹ Stop all tasks</button><span class="fine-print">For public hosting, set NOVA_ACCESS_TOKEN and use a private Space or trusted HTTPS origin.</span></div></div></section>
+            <section class="panel settings-card autonomy-settings"><div class="panel-heading"><div class="panel-heading-title"><span class="panel-icon">◉</span><div><strong>Autonomy & permissions</strong><small id="autonomyLevelSummary">Routine defaults · approval gates active</small></div></div><span class="state-pill good" id="autonomyStatePill">LEVEL B</span></div><div class="settings-content"><form id="autonomyForm" class="autonomy-form"><label>Autonomy level<select id="autonomyLevel"><option value="assisted">A · Assisted — approve the plan and each tool action</option><option value="routine">B · Routine autonomy — safe registered tools run automatically</option><option value="advanced">C · Advanced — registered scopes only; extra modules unavailable</option><option value="high">D · High autonomy — no high-impact privileges are added</option></select></label><p class="autonomy-notice" id="autonomyNotice">Loading permission policy…</p><label>Per-tool overrides<textarea id="autonomyOverrides" rows="4" maxlength="3000" spellcheck="false" placeholder="math.calculate = approve&#10;workspace.read_file = deny"></textarea><small>One rule per line: tool.name = allow, approve, or deny. “Allow” is limited to routine-class tools; unknown or consequential tools cannot be silently enabled. Omit a tool to inherit the level.</small></label><label>Pre-authorized workspace overwrite scopes<textarea id="autonomyScopes" rows="3" maxlength="1000" spellcheck="false" placeholder="drafts&#10;notes/working"></textarea><small>One workspace-relative folder or file prefix per line. At Level B–D, or with a matching explicit “allow” override at Level A, overwrites under these path boundaries skip the individual prompt; backups and path protections still apply. Empty by default.</small></label><div class="setting-actions"><button class="button button-primary" type="submit" id="saveAutonomyButton">Save autonomy policy</button><span class="fine-print">Policy is stored locally in SQLite and applies to the next tool action. A/D labels never authorize features that are not installed.</span></div><div class="form-error" id="autonomyFormError" role="alert"></div></form><div class="autonomy-benchmark"><div class="setting-actions"><button class="button button-outline" id="runAutonomyBenchmark">Run policy benchmark</button><span class="fine-print">Seven deterministic checks · no provider calls · test writes use a temporary sandbox.</span></div><div id="autonomyBenchmarkResult" class="benchmark-result" role="status"></div></div></div></section>
+            <section class="panel settings-card"><div class="panel-heading"><div class="panel-heading-title"><span class="panel-icon">◷</span><div><strong>Resource limits</strong><small>Current server-side guardrails</small></div></div></div><div class="settings-content" id="limitsList"><div class="setting-row"><div><strong>Low-resource mode</strong><small>Lightweight UI · one worker by default</small></div><span class="setting-value positive">ON</span></div><div class="setting-row"><div><strong>Task controls</strong><small>Steps · requests · runtime · parallelism</small></div><span class="setting-value">Loading…</span></div><div class="setting-row"><div><strong>File size</strong><small>UTF-8 text tools only</small></div><span class="setting-value">Bounded</span></div><div class="setting-row"><div><strong>Observed usage</strong><small>Provider-reported tokens, not a bill</small></div><span class="setting-value" id="settingsTokens">0 tokens</span></div></div></section>
+            <section class="panel settings-card"><div class="panel-heading"><div class="panel-heading-title"><span class="panel-icon">◌</span><div><strong>Deployment & data</strong><small>Persistence depends on your hosting volume</small></div></div></div><div class="settings-content"><div class="setting-row"><div><strong>Task history</strong><small>SQLite database</small></div><span class="setting-value">Local disk</span></div><div class="setting-row"><div><strong>Conversation memory</strong><small>Saved history; no long-term profile memory</small></div><span class="setting-value">Basic</span></div><div class="setting-row"><div><strong>Hugging Face Spaces</strong><small>Docker Space · port 7860</small></div><span class="setting-value positive">SUPPORTED</span></div><p class="fine-print">Free Spaces may sleep, have limited compute, and usually provide ephemeral disk unless persistent storage is enabled. This app has no always-on scheduler.</p><div class="setting-actions"><button class="button button-outline" id="refreshStatus">↻ Refresh system status</button><span class="fine-print">Usage totals are bounded to the latest 200 tasks.</span></div></div></section>
+          </div>
+          <div class="roadmap-strip"><span class="roadmap-mark">✳</span><div><strong>Orchestration foundation · v0.2.0</strong><p>Conversation, bounded tasks, scoped tools, multi-provider registry, four intelligence modes, usage reporting, and a versioned evaluation baseline are implemented. Live credentials, provider behavior, and billing are operator-verified. See the README for limits and roadmap.</p></div></div>
+        </section>
+      </div>
+      <footer class="app-footer"><span>© NOVA X <span id="footerVersion">0.2.0</span></span><span><i class="footer-dot"></i> Safe execution · verifiable outcomes</span><span id="footerCloud">Cloud inference · local workspace</span></footer>
+    </main>
+  </div>
+
+  <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="auth-overlay hidden" id="authOverlay" role="dialog" aria-modal="true" aria-labelledby="authHeading">
+    <form class="auth-card" id="authForm"><div class="auth-logo"><span class="brand-mark"><span></span><span></span><span></span></span></div><div class="eyebrow">SECURE SESSION</div><h2 id="authHeading">Welcome to <span>NOVA X</span></h2><p>This deployment requires its configured access token. The token is sent only to this server and is not stored in browser storage.</p><label for="authToken">Access token</label><input id="authToken" type="password" autocomplete="current-password" required maxlength="1000"><button class="button button-primary auth-submit" type="submit">Unlock workspace <span>↗</span></button><div class="auth-error" id="authError" role="alert"></div></form>
+  </div>
+</body>
+</html>

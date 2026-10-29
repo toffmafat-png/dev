@@ -1,0 +1,30 @@
+# NOVA X staged roadmap
+
+Every item must be tested and status-marked before it is advertised as active. The multi-model foundation prioritizes bounded provider routing, auditability, and honest availability/cost reporting. It does not silently change model weights, code, or security permissions.
+
+## Built now
+
+1. **Foundation retained:** FastAPI/static UI, SQLite, optional access-token gate, bounded tasks, task/plan approval controls, scoped workspace tools, safe calculator, optional Tavily search, Docker/Hugging Face configuration.
+2. **Provider registry:** Official-host presets for OpenAI, Anthropic, Gemini, xAI, DeepSeek, Mistral, plus opt-in authenticated custom OpenAI-compatible endpoints; server-side environment-variable credential references; dynamic catalogs where supported; separate configured/connected/available/tested states.
+3. **Bounded orchestration:** Fast, Balanced, Frontier Fusion, and Maximum Intelligence; manual/adaptive ordering; limited fallbacks and parallel analysis; conflict review and synthesis; actual-use/failure reporting; per-minute/per-task request, time, output, concurrency, context, and configured-rate estimate bounds.
+4. **Measured model baseline:** Versioned `nova-eval-v1` format/tool-call checks, stored per-profile history, call/latency/token/rate metrics, and optional user ratings. No model-weight learning or private conversation training.
+5. **Tests/docs:** Fake-provider API/adapter/orchestration/evaluation tests, provider documentation links, security notes, and manual acceptance steps. Live credentials and provider billing remain unverified.
+6. **Autonomy policy:** Persistent Levels A–D, conservative Level B default, per-tool overrides, scoped workspace overwrite grants, explicit-deny precedence, and a central checkpointed approval gate.
+7. **Configured goals (web process only):** SQLite-backed, user-authored hourly/daily/weekly goals; explicit enable/pause and manual run; in-process scheduler, daily cap, no catch-up burst, and task provenance. This is not an always-on durable worker and is not activated by the native desktop.
+8. **Setup and benchmark:** Read-only bootstrap diagnostics and a seven-case deterministic local policy/scheduler benchmark in a throwaway workspace; no provider or external calls.
+9. **Native desktop first increment:** PySide6/Qt window and CLI, local SQLite task/history, scoped workspaces, structured user-level process runner, approval/cancellation controls, keyring-backed optional provider profiles, diagnostics, Debian desktop entry, and a built `.deb`. Package/CLI/tests were checked in Debian; the window and Kali installation remain untested because this sandbox lacks a GUI, Qt, Secret Service, and polkit.
+
+## Next recommended increments
+
+10. **Native desktop validation/hardening:** Launch the Qt window on Kali; test Secret Service unlock/restore, desktop entry, keyring migration, polkit UX, CLI approval paths, accessibility/keyboard navigation, secure update/backup behavior, and install/uninstall on a disposable supported host. Add signed repository releases before broad distribution.
+11. **Provider lifecycle:** Implement xAI Responses API support, provider-specific live-validated capabilities, current metadata refresh, pagination continuation with a strict request cap, and account-entitlement-aware tests. Require owner credentials and billing confirmation.
+12. **Evaluation lab:** Add operator-defined benchmark packs, baseline version pinning, compare-before/after evaluation records, exportable result diffs, rating aggregation by model, and controlled routing experiments that cannot exceed configured budgets.
+13. **Safe candidate-code workflow:** Only after a reviewed OS/container isolation design, add separate candidate worktrees, non-production test execution, provenance, code review, explicit high-impact approval, signed promotion, backup, and one-step rollback. Do not run model-authored code in the production process or bypass sandbox boundaries. Until then, code edits are operator-reviewed deployments with existing tests and backups.
+14. **Memory manager:** User-approved preferences/project facts with list/edit/export/delete, retention limits, opt-out, and separation from task/chat context. Never train on private chats without authorization.
+15. **Document ingestion:** Size-validated upload, bounded parsing, citations/page references, retention/delete controls; begin with non-executable formats.
+16. **Developer workspace:** Isolated repository diff and test environment only after sandbox review; explicit commands/approvals; never pass model-generated shell strings to the host.
+17. **Integrations:** One OAuth/API provider at a time; minimum scopes; test/disconnect, approvals, audit, and outcome reconciliation.
+18. **Voice and durable scheduler upgrades:** Consent-first pairing, revocation, offline safety, interruption controls, durable external hosting, quiet hours, health monitoring, and accurate failure notices. The current native app has no background service or voice interface; the web scheduler remains in-process only.
+19. **Hardening:** Multi-user auth, persistent session store, per-user quotas, schema migrations, backup/restore drills, independent security review, and live deployment acceptance.
+
+High-impact changes to code, external systems, permissions, or credentials must be reviewed and explicitly approved by an operator. Provider opinions or ratings cannot silently alter security controls.

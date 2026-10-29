@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=NOVA X
+GenericName=AI Desktop Assistant
+Comment=Local-first AI assistant with scoped command execution
+Exec=/usr/bin/nova-x desktop
+Icon=nova-x
+Terminal=false
+Categories=Utility;Development;
+StartupNotify=true
+Keywords=assistant;AI;Linux;Kali;workspace;tasks;
