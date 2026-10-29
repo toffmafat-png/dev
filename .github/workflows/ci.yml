@@ -83,6 +83,51 @@ jobs:
       - name: Pytest
         run: python -m pytest -q
 
+  intelligence-eval:
+    # §86 general-intelligence evaluation suite. It is offline and deterministic:
+    # no provider credentials are configured here, so a pass cannot depend on
+    # network access or model quality. Held-out cases are run separately and must
+    # never be usable as a baseline.
+    name: Intelligence evaluation (nova-gie-v1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            ${{ env.PROJECT_DIR }}/requirements.txt
+            ${{ env.PROJECT_DIR }}/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run the default split
+        run: python -m nova.cognition --db "$RUNNER_TEMP/nova-gie.sqlite3" --workspace "$RUNNER_TEMP/nova-gie-ws"
+
+      - name: Run the held-out split
+        run: python -m nova.cognition --include-held-out --db "$RUNNER_TEMP/nova-gie.sqlite3" --workspace "$RUNNER_TEMP/nova-gie-ws"
+
+      - name: Held-out runs must not be savable as a baseline
+        run: |
+          if python -m nova.cognition --include-held-out --save-baseline "$RUNNER_TEMP/gie-held-out.json" \
+               --db "$RUNNER_TEMP/nova-gie.sqlite3" --workspace "$RUNNER_TEMP/nova-gie-ws"; then
+            echo "::error::a held-out run was accepted as a baseline"
+            exit 1
+          fi
+          echo "refused as expected"
+
+      - name: Baseline round-trip detects no regression
+        run: |
+          python -m nova.cognition --save-baseline "$RUNNER_TEMP/gie-baseline.json" \
+            --db "$RUNNER_TEMP/nova-gie.sqlite3" --workspace "$RUNNER_TEMP/nova-gie-ws"
+          python -m nova.cognition --baseline "$RUNNER_TEMP/gie-baseline.json" \
+            --db "$RUNNER_TEMP/nova-gie.sqlite3" --workspace "$RUNNER_TEMP/nova-gie-ws"
+
   desktop-ui:
     # The native Qt window test skips on hosts without system graphics libraries.
     # GitHub runners ship libGL/libEGL, so this job is where that test really runs.

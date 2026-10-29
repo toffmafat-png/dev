@@ -7,6 +7,7 @@ Contents:
   Dockerfile
   README.md
   app.py
+  docs/COGNITION.md
   docs/FEATURE_MATRIX.md
   docs/INTEGRATIONS.md
   docs/NATIVE_DESKTOP.md
@@ -15,6 +16,17 @@ Contents:
   docs/TESTING.md
   nova/__init__.py
   nova/autonomy.py
+  nova/cognition/__init__.py
+  nova/cognition/__main__.py
+  nova/cognition/curiosity.py
+  nova/cognition/epistemic.py
+  nova/cognition/evaluation.py
+  nova/cognition/meta_reasoning.py
+  nova/cognition/orchestration.py
+  nova/cognition/planning.py
+  nova/cognition/procedures.py
+  nova/cognition/service.py
+  nova/cognition/world_model.py
   nova/config.py
   nova/db.py
   nova/desktop/__init__.py
@@ -51,6 +63,8 @@ Contents:
   tests/test_autonomy.py
   tests/test_config.py
   tests/test_controls.py
+  tests/test_cognition.py
+  tests/test_cognition_api.py
   tests/test_desktop.py
   tests/test_desktop_ui.py
   tests/test_engine.py
@@ -65,6 +79,12 @@ Excluded: generated caches, local databases/workspaces, credentials, and built r
 Build instructions: README.md and docs/NATIVE_DESKTOP.md.
 
 Notes:
+  * The cognition layer (§70–§89) lives in nova/cognition/ and is documented in
+    docs/COGNITION.md, which states per-mechanism what is implemented, what is
+    partial, and what is deliberately absent. Its evaluation suite is run with
+    `python -m nova.cognition` (offline, deterministic, zero provider calls) and
+    its state is persisted in seven cognition_* / intelligence_eval_runs tables
+    created by nova/db.py.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).

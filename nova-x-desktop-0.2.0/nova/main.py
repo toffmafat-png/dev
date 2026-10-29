@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from nova import __version__
 from nova.autonomy import AutonomyPolicy, run_autonomy_benchmark
+from nova.cognition import MIN_CALIBRATION_SAMPLES, PROVENANCES, SUITE_VERSION, suite_manifest
 from nova.config import Settings
 from nova.db import Database
 from nova.engine import TERMINAL_STATES, TaskEngine
@@ -34,6 +35,31 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 # expired entries are pruned, so a long-lived process cannot grow this without limit.
 MAX_ACTIVE_SESSIONS = 1_000
 SESSION_PRUNE_INTERVAL_SECONDS = 60.0
+
+
+def _git_commit() -> str:
+    """Best-effort source commit for evaluation provenance; '' when unknown.
+
+    Read from ``NOVA_GIT_COMMIT`` when set (CI and packaged builds), otherwise
+    resolved from a local ``.git`` directory. It never shells out and never
+    raises: an unknown commit is reported as unknown rather than guessed.
+    """
+    configured = os.getenv("NOVA_GIT_COMMIT", "").strip()
+    if configured:
+        return configured[:64]
+    here = Path(__file__).resolve().parent
+    for parent in (here, *here.parents):
+        git_dir = parent / ".git"
+        if not git_dir.exists():
+            continue
+        try:
+            head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+            if head.startswith("ref: "):
+                return (git_dir / head[5:]).read_text(encoding="utf-8").strip()[:64]
+            return head[:64]
+        except OSError:
+            return ""
+    return ""
 
 
 class ChatRequest(BaseModel):
@@ -57,6 +83,51 @@ class AutonomyPolicyUpdateRequest(BaseModel):
     level: str = Field(min_length=1, max_length=20)
     tool_overrides: dict[str, str] = Field(default_factory=dict)
     authorized_overwrite_prefixes: list[str] = Field(default_factory=list, max_length=20)
+
+
+class OptionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str | None = Field(default=None, max_length=80)
+    description: str = Field(min_length=1, max_length=600)
+    estimated_tool_calls: int = Field(default=1, ge=0, le=200)
+    estimated_provider_requests: int = Field(default=2, ge=0, le=200)
+    estimated_minutes: float = Field(default=5.0, ge=0.0, le=100_000.0)
+    risk: float = Field(default=0.1, ge=0.0, le=1.0)
+    reversible: bool = True
+    verifiable: bool = True
+    authorization_required: bool = False
+    requires_missing_capability: bool = False
+    missing_capability: str = Field(default="", max_length=200)
+
+
+class DecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    objective: str = Field(min_length=1, max_length=2_000)
+    options: list[OptionInput] = Field(min_length=1, max_length=8)
+    risk_tolerance: str = Field(default="routine", max_length=16)
+    task_id: str | None = Field(default=None, max_length=64)
+    authorized_option_ids: list[str] = Field(default_factory=list, max_length=8)
+
+
+class ProcedureCorrectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=500)
+    provenance: str = Field(default="user", max_length=24)
+    replacement_id: str | None = Field(default=None, max_length=80)
+
+
+class KnowledgeGapRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    question: str = Field(min_length=1, max_length=400)
+    blocks_objective: bool = True
+    domain: str = Field(default="", max_length=80)
+    candidate_paths: list[str] = Field(default_factory=list, max_length=10)
+
+
+class EvaluationRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    include_held_out: bool = False
+    use_baseline: bool = True
 
 
 class GoalCreateRequest(BaseModel):
@@ -267,6 +338,36 @@ class SessionStore:
         return self._expiry.pop(session_id, None) is not None
 
 
+def _cognition_health(app_state: Any) -> dict[str, Any]:
+    """Cognition summary for the unauthenticated liveness probe.
+
+    `/api/health` must never fail because the cognition layer is degraded, so
+    this reads only in-memory aggregates and falls back to a fixed shape. It
+    exposes counts and statuses only: no observation values, no subjects, and
+    therefore nothing that could leak workspace paths or tool output.
+    """
+    base: dict[str, Any] = {
+        "suite_version": SUITE_VERSION,
+        "calibration_status": "unavailable",
+        "prediction_accuracy": "unavailable",
+        "subjects_requiring_reinspection": 0,
+        "degraded": True,
+        "detail": "/api/cognition",
+    }
+    engine = getattr(app_state, "engine", None)
+    cognition = getattr(engine, "cognition", None)
+    if cognition is None:
+        return base
+    try:
+        base["calibration_status"] = cognition.calibration.report().status
+        base["prediction_accuracy"] = cognition.world_model.prediction_accuracy().get("status") or "unknown"
+        base["subjects_requiring_reinspection"] = len(cognition.world_model.requires_reinspection())
+        base["degraded"] = bool(cognition.errors)
+    except Exception:  # a cognition defect must not take down the health probe
+        base["degraded"] = True
+    return base
+
+
 def create_app(
     settings: Settings | None = None,
     provider: Any | None = None,
@@ -435,6 +536,7 @@ def create_app(
                 "daily_run_cap": settings.max_scheduled_goal_runs_per_day,
                 "execution": "in-process only; scheduled work pauses when the server sleeps or stops",
             },
+            "cognition": _cognition_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -639,6 +741,183 @@ def create_app(
         except KeyError:
             raise HTTPException(status_code=404, detail="Intelligence run not found.") from None
         return {"id": feedback_id, "saved": True, "note": "Feedback is stored locally for evaluation and routing analysis; it does not train model weights."}
+
+    # ------------------------------------------------------------ cognition
+    # Read paths expose what NOVA currently believes, knows and has measured.
+    # Write paths are limited to correcting or removing stored knowledge and to
+    # running the evaluation suite. Nothing here lets a caller - or the model -
+    # widen authority: risk tolerance and authorized options arrive per request.
+
+    @app.get("/api/cognition")
+    async def cognition_state() -> dict[str, Any]:
+        return engine.cognition.snapshot(tools=registry)
+
+    @app.get("/api/cognition/beliefs")
+    async def cognition_beliefs(subject: str = "", limit: int = 40) -> dict[str, Any]:
+        return engine.cognition.beliefs(subject=subject[:120], limit=max(1, min(limit, 200)))
+
+    @app.get("/api/cognition/observations")
+    async def cognition_observations(subject: str = "", limit: int = 100, include_history: bool = False) -> dict[str, Any]:
+        rows = database.list_observations(
+            engine.cognition.scope,
+            subject=subject[:120],
+            limit=max(1, min(limit, 500)),
+            include_history=include_history,
+        )
+        return {
+            "scope": engine.cognition.scope,
+            "count": len(rows),
+            "observations": rows,
+            "requires_reinspection": engine.cognition.world_model.requires_reinspection(),
+            "prediction_accuracy": engine.cognition.world_model.prediction_accuracy(),
+        }
+
+    @app.get("/api/cognition/calibration")
+    async def cognition_calibration(domain: str = "", limit: int = 500) -> dict[str, Any]:
+        report = engine.cognition.calibration.report(domain[:80])
+        return {
+            "report": report.to_dict(),
+            "records": database.list_calibration_records(domain[:80], max(1, min(limit, 2000)))[-100:],
+            "note": (
+                "Calibration compares stated confidence with observed outcomes. Below "
+                f"{MIN_CALIBRATION_SAMPLES} resolved outcomes no score is reported, rather than a flattering one."
+            ),
+        }
+
+    @app.get("/api/cognition/procedures")
+    async def cognition_procedures(status: str = "", limit: int = 100) -> dict[str, Any]:
+        exported = engine.cognition.procedures.export_state()
+        return {
+            "counts": exported["counts"],
+            "thresholds": exported["thresholds"],
+            "procedures": database.list_procedures(status[:20], max(1, min(limit, 500))),
+            "recent_activity": engine.cognition.procedures.history(30),
+        }
+
+    @app.get("/api/cognition/procedures/{procedure_id}/transfer")
+    async def cognition_transfer(procedure_id: str, target_domain: str = "") -> dict[str, Any]:
+        return engine.cognition.transfer(procedure_id[:80], target_domain=target_domain[:80], tools=registry)
+
+    @app.post("/api/cognition/procedures/{procedure_id}/correct")
+    async def cognition_correct_procedure(procedure_id: str, body: ProcedureCorrectionRequest) -> dict[str, Any]:
+        provenance = body.provenance.strip().lower()
+        if provenance not in PROVENANCES:
+            raise HTTPException(status_code=422, detail=f"provenance must be one of: {', '.join(sorted(PROVENANCES))}.")
+        library = engine.cognition.procedures
+        if library.get(procedure_id) is None:
+            stored = database.get_procedure(procedure_id)
+            if not stored:
+                raise HTTPException(status_code=404, detail="Procedure not found.")
+            library.import_state({"procedures": [stored]})
+        if not library.correct(procedure_id, reason=body.reason.strip(), provenance=provenance, replacement_id=body.replacement_id):
+            raise HTTPException(status_code=404, detail="Procedure not found.")
+        corrected = library.get(procedure_id)
+        database.upsert_procedure(corrected.to_dict())
+        return {
+            "corrected": True,
+            "procedure": corrected.to_dict(),
+            "note": "The reason and its provenance are recorded alongside the correction.",
+        }
+
+    @app.delete("/api/cognition/procedures/{procedure_id}")
+    async def cognition_remove_procedure(procedure_id: str, reason: str = "") -> dict[str, Any]:
+        library = engine.cognition.procedures
+        removed = library.remove(procedure_id, reason=reason.strip()) or database.delete_procedure(procedure_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="Procedure not found.")
+        database.delete_procedure(procedure_id)
+        return {"removed": True, "id": procedure_id, "reason": reason.strip()[:300]}
+
+    @app.get("/api/cognition/decisions")
+    async def cognition_decisions(limit: int = 50, unresolved_only: bool = False) -> dict[str, Any]:
+        rows = database.list_decisions(max(1, min(limit, 200)), unresolved_only=unresolved_only)
+        resolved = [row for row in rows if row["prediction_matched"] is not None]
+        accurate = sum(1 for row in resolved if row["prediction_matched"])
+        return {
+            "decisions": rows,
+            "prediction_accuracy": {
+                "resolved": len(resolved),
+                "accurate": accurate,
+                "rate": round(accurate / len(resolved), 4) if resolved else None,
+                "note": "Forecast versus observed outcome. Unresolved decisions are excluded, not counted as correct.",
+            },
+        }
+
+    @app.post("/api/cognition/decisions")
+    async def cognition_make_decision(body: DecisionRequest) -> dict[str, Any]:
+        tolerance = body.risk_tolerance.strip().lower()
+        if tolerance not in {"cautious", "routine", "aggressive"}:
+            raise HTTPException(status_code=422, detail="risk_tolerance must be cautious, routine, or aggressive.")
+        payload = engine.cognition.decide(
+            body.objective,
+            [option.model_dump() for option in body.options],
+            task_id=body.task_id or "",
+            tools=registry,
+            risk_tolerance=tolerance,
+            authorization_granted={item for item in body.authorized_option_ids if item},
+        )
+        return {
+            "decision": payload,
+            "note": (
+                "Scores come from the supplied cost, risk, reversibility and verifiability figures. "
+                "The predicted outcome is a forecast; resolve the decision to score it."
+            ),
+        }
+
+    @app.get("/api/cognition/tasks/{task_id}/reviews")
+    async def cognition_task_reviews(task_id: str) -> dict[str, Any]:
+        task = database.get_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found.")
+        return {
+            "task_id": task_id,
+            "state": task.get("state"),
+            "preflight": [item["payload"] for item in database.get_reviews(task_id, "preflight")],
+            "posthoc": [item["payload"] for item in database.get_reviews(task_id, "posthoc")],
+        }
+
+    @app.post("/api/cognition/gaps")
+    async def cognition_resolve_gap(body: KnowledgeGapRequest) -> dict[str, Any]:
+        plan = engine.cognition.resolve_knowledge_gap(
+            body.question,
+            blocks_objective=body.blocks_objective,
+            domain=body.domain,
+            candidate_paths=tuple(body.candidate_paths),
+            tools=registry,
+        )
+        return {
+            "plan": plan,
+            "exploration": engine.cognition.exploration.to_dict(),
+            "note": (
+                "A bounded plan, not an executed exploration. Rungs outside the authorized workspace, the "
+                "request budget, or the autonomy policy are skipped and listed with their reasons."
+            ),
+        }
+
+    @app.get("/api/cognition/evaluation/manifest")
+    async def cognition_evaluation_manifest() -> dict[str, Any]:
+        return suite_manifest()
+
+    @app.get("/api/cognition/evaluation/baseline")
+    async def cognition_evaluation_baseline() -> dict[str, Any]:
+        return {
+            "suite_version": SUITE_VERSION,
+            "baseline": database.get_latest_intelligence_baseline(SUITE_VERSION),
+            "note": "Held-out runs are stored but never selected as a baseline.",
+        }
+
+    @app.get("/api/cognition/evaluation/runs")
+    async def cognition_evaluation_runs(limit: int = 20) -> dict[str, Any]:
+        return {"suite_version": SUITE_VERSION, "runs": database.list_intelligence_eval_runs(limit=max(1, min(limit, 100)))}
+
+    @app.post("/api/cognition/evaluation/run")
+    async def cognition_run_evaluation(body: EvaluationRunRequest) -> dict[str, Any]:
+        return engine.cognition.run_evaluation(
+            include_held_out=body.include_held_out,
+            tools=registry,
+            commit=_git_commit(),
+            use_baseline=body.use_baseline,
+        )
 
     @app.get("/api/goals")
     async def get_goals() -> dict[str, Any]:
