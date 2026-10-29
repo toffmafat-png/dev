@@ -133,6 +133,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ${{ env.PROJECT_DIR }}/requirements.txt
+
+      # The CLI smoke test imports nova.desktop.runtime, which pulls in httpx and
+      # pydantic. Without this the extracted launcher fails on a bare interpreter.
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
 
       - name: Build Debian package
         run: bash scripts/build_deb.sh
