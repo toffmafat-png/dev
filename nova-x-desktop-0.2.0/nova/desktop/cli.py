@@ -24,6 +24,14 @@ def _parser() -> argparse.ArgumentParser:
     hw.add_argument("--query", default="", help="Optional hardware filter query")
     srvs = subparsers.add_parser("servers", help="List registered OpenSSH servers & health (§157)")
     srvs.add_argument("--audit", action="store_true", help="Run read-only OpenSSH health check across registered servers")
+    tor_cmd = subparsers.add_parser("tor", help="Inspect or toggle Kali Linux Tor & Privacy Network Dashboard (§165.1/§165.8)")
+    tor_group = tor_cmd.add_mutually_exclusive_group()
+    tor_group.add_argument("--enable", action="store_true", help="Enable NOVA X Tor SOCKS5h integration")
+    tor_group.add_argument("--disable", action="store_true", help="Immediately disable NOVA X Tor SOCKS5h integration")
+    tor_cmd.add_argument("--dashboard", action="store_true", help="Include 6-component Privacy Network Dashboard")
+    osint_cmd = subparsers.add_parser("osint", help="Run §165.3 Unified Multi-Source Search or §165.4 12-Step Research Assistant")
+    osint_cmd.add_argument("query", help="Search query or research question")
+    osint_cmd.add_argument("--research", action="store_true", help="Run full 12-step epistemic research report")
     worker = subparsers.add_parser("worker", help="Run optional user-level background goal/task worker")
     worker.add_argument("--once", action="store_true", help="Run one scheduled-goal check tick and exit")
     worker.add_argument("--poll-seconds", type=int, default=15, help="Polling interval in seconds (5–300)")
@@ -174,6 +182,36 @@ def main(argv: Sequence[str] | None = None) -> int:
                 runtime.system_access.servers.multi_server_audit()
                 if args.audit
                 else {"servers": runtime.system_access.servers.list_servers()}
+            )
+            print(json.dumps(payload, indent=2, default=str))
+            return 0
+        finally:
+            runtime.close()
+    if args.action == "tor":
+        runtime = DesktopRuntime()
+        try:
+            if args.enable:
+                runtime.privacy_intel.tor.update_config({"tor_enabled": True})
+            elif args.disable:
+                runtime.privacy_intel.tor.update_config({"tor_enabled": False})
+            out: dict[str, object] = {"tor": runtime.privacy_intel.tor.detect_installation_and_status()}
+            if args.dashboard:
+                out["privacy_dashboard"] = runtime.privacy_intel.tor.privacy_dashboard()
+            print(json.dumps(out, indent=2, default=str))
+            return 0
+        finally:
+            runtime.close()
+    if args.action == "osint":
+        runtime = DesktopRuntime()
+        try:
+            guard = runtime.privacy_intel.check_ethics(args.query)
+            if not guard["allowed"]:
+                print(json.dumps({"ok": False, **guard}, indent=2), file=sys.stderr)
+                return 1
+            payload = (
+                runtime.privacy_intel.research_assistant.conduct_research(args.query)
+                if args.research
+                else runtime.privacy_intel.search.search(args.query)
             )
             print(json.dumps(payload, indent=2, default=str))
             return 0

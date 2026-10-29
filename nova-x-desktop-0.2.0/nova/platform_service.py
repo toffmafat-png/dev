@@ -34,12 +34,14 @@ from nova.modalities import (
 )
 from nova.observability import Redactor, TraceCollector
 from nova.plugins import PluginManager, builtin_sdk_examples
+from nova.privacy_intel.service import PrivacyIntelligenceService
 from nova.resources import ResourceManager
 from nova.sandbox import Sandbox
 from nova.self_improvement import ControlledImprovementEngine
 from nova.system_access.service import SystemAccessService
 from nova.terminal import TerminalWorkspace
 from nova.tools.creation import build_creation_tools
+from nova.tools.privacy_intel import build_privacy_intel_tools
 from nova.tools.registry import ToolRegistry
 from nova.tools.system_access import build_system_access_tools
 from nova.unified_os import UnifiedOperatingKernel
@@ -92,6 +94,8 @@ class PlatformService:
     memory: SharedMemorySystem = field(init=False)
     improvement: ControlledImprovementEngine = field(init=False)
     unified_os: UnifiedOperatingKernel = field(init=False)
+    system_access: SystemAccessService = field(init=False)
+    privacy_intel: PrivacyIntelligenceService = field(init=False)
 
     def __post_init__(self) -> None:
         data_dir = Path(self.settings.data_dir)
@@ -264,6 +268,19 @@ class PlatformService:
         for sa_tool in build_system_access_tools(lambda: self.system_access):
             if self.tools.get(sa_tool.name) is None:
                 self.tools.register(sa_tool)
+        self.privacy_intel = PrivacyIntelligenceService(
+            db=self.db,
+            knowledge=self.knowledge,
+            memory_os=self.memory,
+            vault=self.system_access.vault,
+            state_dir=data_dir / "privacy_intel",
+            workspace_dir=workspace_dir,
+            redactor=self.redactor,
+            scheduler_active_probe=lambda: self.unified_os.worker.status().get("status") == "running",
+        )
+        for pi_tool in build_privacy_intel_tools(lambda: self.privacy_intel):
+            if self.tools.get(pi_tool.name) is None:
+                self.tools.register(pi_tool)
 
     def _register_baseline_integrations(self) -> None:
         self.gateway.register(
@@ -338,6 +355,10 @@ class PlatformService:
             "desktop_session": self.desktop_control.inspect_session().display_server,
             "worker_status": self.unified_os.worker.status()["status"],
             "system_access": self.system_access.health_summary(),
+            "privacy_intel": {
+                "tor_enabled": bool(self.privacy_intel.tor.get_config()["tor_enabled"]),
+                "onion_hosting_enabled": bool(self.privacy_intel.tor.get_config()["onion_hosting_enabled"]),
+            },
             "recommendations": [item.to_dict() for item in recommendation_catalogue()],
         }
 

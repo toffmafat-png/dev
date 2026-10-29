@@ -75,10 +75,10 @@ jobs:
             ${{ env.PROJECT_DIR }}/requirements.txt
             ${{ env.PROJECT_DIR }}/requirements-dev.txt
 
-      - name: Install OpenSSH server & client for §164 live remote verification
+      - name: Install OpenSSH & Tor packages for §164/§165 live verification
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends openssh-server openssh-client
+          sudo apt-get install -y --no-install-recommends openssh-server openssh-client tor
 
       - name: Install dependencies
         run: |
@@ -96,6 +96,9 @@ jobs:
 
       - name: System Access, Hardware & Continuous Autonomy Acceptance (§164)
         run: python -m nova.system_access.acceptance
+
+      - name: Dark Web, Tor & Advanced Internet Intelligence Acceptance (§165)
+        run: python -m nova.privacy_intel.acceptance
 
       - name: Pytest (full suite)
         run: python -m pytest -q

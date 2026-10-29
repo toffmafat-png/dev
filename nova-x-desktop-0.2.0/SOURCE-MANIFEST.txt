@@ -14,6 +14,7 @@ Contents:
   docs/INTEGRATIONS.md
   docs/NATIVE_DESKTOP.md
   docs/PLATFORM_ARCHITECTURE.md
+  docs/PRIVACY_INTEL.md
   docs/RELEASE_CHECKLIST.md
   docs/ROADMAP.md
   docs/SECURITY.md
@@ -70,6 +71,12 @@ Contents:
   nova/observability.py
   nova/platform_service.py
   nova/plugins.py
+  nova/privacy_intel/__init__.py
+  nova/privacy_intel/acceptance.py
+  nova/privacy_intel/search_and_research.py
+  nova/privacy_intel/service.py
+  nova/privacy_intel/threat_and_files.py
+  nova/privacy_intel/tor_network.py
   nova/provider.py
   nova/resources.py
   nova/sandbox.py
@@ -89,6 +96,7 @@ Contents:
   nova/tools/__init__.py
   nova/tools/calculator.py
   nova/tools/creation.py
+  nova/tools/privacy_intel.py
   nova/tools/registry.py
   nova/tools/research.py
   nova/tools/system_access.py
@@ -129,6 +137,7 @@ Contents:
   tests/test_intelligence.py
   tests/test_model_providers.py
   tests/test_platform_stack.py
+  tests/test_privacy_intel_module.py
   tests/test_provider.py
   tests/test_regressions.py
   tests/test_system_access_expansion.py
@@ -157,7 +166,7 @@ Notes:
   * The §1–§27 Unified Universal AI Operating System is unified by
     nova/unified_os.py, nova/memory_hub.py, nova/desktop_control.py,
     nova/self_improvement.py, optional local Ollama support in
-    nova/model_providers.py, the 11-page native Qt Control Center in
+    nova/model_providers.py, the 12-page native Qt Control Center in
     nova/desktop/app.py, and the 18-check acceptance suite in nova/acceptance.py
     (`python -m nova.acceptance` and tests/test_unified_os_acceptance.py),
     documented in docs/UNIFIED_OS.md.
@@ -166,6 +175,10 @@ Notes:
     nova/system_access/ and nova/tools/system_access.py, documented in
     docs/SYSTEM_ACCESS.md and verified by `python -m nova.system_access.acceptance`
     and tests/test_system_access_expansion.py.
+  * The §165 Dark Web, Tor Network, and Advanced Internet Intelligence Module
+    lives in nova/privacy_intel/ and nova/tools/privacy_intel.py, documented in
+    docs/PRIVACY_INTEL.md and verified by `python -m nova.privacy_intel.acceptance`
+    (15 acceptance checks) and tests/test_privacy_intel_module.py.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).

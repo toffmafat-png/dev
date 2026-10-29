@@ -45,13 +45,14 @@ def test_native_qt_window_builds_all_staged_pages(qapp, tmp_path, monkeypatch):
     try:
         window.show()
         qapp.processEvents()
-        assert len(window.pages) == 11
-        assert window.stack.count() == 11
+        assert len(window.pages) == 12
+        assert window.stack.count() == 12
         assert set(window.pages) == {
             "chat",
             "studio",
             "control_center",
             "infrastructure",
+            "privacy_intel",
             "tasks",
             "commands",
             "history",
@@ -65,6 +66,13 @@ def test_native_qt_window_builds_all_staged_pages(qapp, tmp_path, monkeypatch):
         assert window.pages["studio"] is not None
         assert window.pages["control_center"] is not None
         assert window.pages["infrastructure"] is not None
+        assert window.pages["privacy_intel"] is not None
+
+        # Switch to §165 Tor, .onion & OSINT page and verify real backend state.
+        window._show_page("privacy_intel")
+        qapp.processEvents()
+        assert "TOR" in window.priv_tor_pill.text()
+        assert "System-wide Tor=False" in window.priv_dashboard_box.toPlainText()
 
         # Switch to §149–§164 Hardware, Screen Studio & Servers page and verify real backend state.
         window._show_page("infrastructure")

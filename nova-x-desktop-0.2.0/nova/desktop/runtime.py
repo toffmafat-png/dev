@@ -155,6 +155,7 @@ class DesktopRuntime:
         self.platform.unified_os.model_manager = self.model_manager
         self.creation = self.platform.creation
         self.system_access = self.platform.system_access
+        self.privacy_intel = self.platform.privacy_intel
         self.async_service = AsyncService()
         self.closed = False
         self.database.recover_interrupted_tasks()
@@ -445,6 +446,11 @@ class DesktopRuntime:
                     f"host tools detected across {len(self.creation.summary()['supported_domains'])} domain(s)."
                 ),
             },
+            {
+                "name": "Tor & privacy network",
+                "status": "ready" if self.privacy_intel.tor.detect_installation_and_status()["socks_connectivity"]["socks5_reachable"] else "optional",
+                "detail": self.privacy_intel.tor.detect_installation_and_status()["status_indicator"],
+            },
         ]
         active_tasks = [t for t in self.database.list_tasks(limit=30) if t.get("state") in {"queued", "running", "waiting_approval"}]
         blockers = [
@@ -502,6 +508,10 @@ class DesktopRuntime:
             "nodes": self.database.list_remote_nodes(),
             "infrastructure_knowledge": self.system_access.infra_knowledge.list_records()[:20],
         }
+
+    def privacy_intel_snapshot(self) -> dict[str, Any]:
+        """§165 Live snapshot for the Tor, `.onion`, OSINT & Threat Intelligence UI."""
+        return self.privacy_intel.status_summary()
 
     def export_diagnostic_bundle(self) -> dict[str, Any]:
         return self.platform.health_center.export_diagnostic_report(
