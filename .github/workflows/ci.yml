@@ -113,9 +113,16 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
+          # pipefail matters here: without it the pipeline's status is tee's, so a
+          # genuine pytest failure would be masked and only caught by the next step.
+          set -euo pipefail
           python -m pytest tests/test_desktop_ui.py -q -rs | tee /tmp/qt-result.txt
           if grep -q "PySide6/Qt is unavailable" /tmp/qt-result.txt; then
             echo "::error::Qt UI test skipped on a runner that should support it."
+            exit 1
+          fi
+          if ! grep -qE "[1-9][0-9]* passed" /tmp/qt-result.txt; then
+            echo "::error::Qt UI test did not report any passing tests."
             exit 1
           fi
 
