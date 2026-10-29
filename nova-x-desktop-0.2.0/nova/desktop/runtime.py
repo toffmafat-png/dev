@@ -6,10 +6,11 @@ import os
 import platform
 import shutil
 import threading
+from collections.abc import Coroutine
 from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Coroutine
+from typing import Any
 
 # Prevent repository .env files from being loaded before native keyring setup.
 os.environ["NOVA_DESKTOP_MODE"] = "1"
@@ -18,11 +19,11 @@ from nova.autonomy import AutonomyPolicy
 from nova.config import Settings
 from nova.db import Database
 from nova.desktop.commands import CommandRunner, build_command_tools
-from nova.desktop.policy import CommandPolicy, DEFAULT_TRUSTED_PREFIXES
+from nova.desktop.policy import DEFAULT_TRUSTED_PREFIXES, CommandPolicy
 from nova.desktop.secrets import SECRET_ENV_NAMES, SecretStore, SecretStoreError
+from nova.engine import TERMINAL_STATES, TaskEngine
 from nova.intelligence import IntelligenceOrchestrator, ModelManager
 from nova.tools import ToolRegistry, build_calculator_tool, build_research_tool, build_workspace_tools
-from nova.engine import TaskEngine, TERMINAL_STATES
 
 
 class AsyncService:

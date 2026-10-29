@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 
 def test_only_enabled_configured_goals_are_dispatched_and_missed_runs_do_not_burst(environment):
     _settings, db, _registry, _workspace = environment
     disabled = db.create_goal("Disabled", "Do not run until enabled", 60, enabled=False)
-    assert db.dispatch_due_goals(now=datetime.now(timezone.utc) + timedelta(days=3)) == []
+    assert db.dispatch_due_goals(now=datetime.now(UTC) + timedelta(days=3)) == []
 
     enabled = db.update_goal(disabled["id"], enabled=True)
     assert enabled and enabled["enabled"] is True
-    late = datetime.now(timezone.utc) + timedelta(days=3)
+    late = datetime.now(UTC) + timedelta(days=3)
     due = db.dispatch_due_goals(daily_limit=5, now=late)
     assert len(due) == 1
     assert due[0]["goal_id"] == disabled["id"]
@@ -28,7 +28,7 @@ def test_scheduled_goal_runs_obey_daily_cap_and_manual_runs_are_explicit(environ
     _settings, db, _registry, _workspace = environment
     first = db.create_goal("First", "First configured objective", 60, enabled=True)
     second = db.create_goal("Second", "Second configured objective", 60, enabled=True)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     due_at = (now - timedelta(minutes=2)).isoformat(timespec="microseconds")
     with db._lock, db._connect() as conn:
         conn.execute("UPDATE goals SET next_run_at = ? WHERE id IN (?, ?)", (due_at, first["id"], second["id"]))
@@ -50,8 +50,8 @@ def test_goal_updates_reset_the_next_run_and_preserve_task_history(environment):
     goal = db.create_goal("Review project", "Review project files safely", 1440, enabled=False)
     enabled = db.update_goal(goal["id"], enabled=True)
     assert enabled["enabled"] is True
-    assert datetime.fromisoformat(enabled["next_run_at"]) > datetime.now(timezone.utc)
+    assert datetime.fromisoformat(enabled["next_run_at"]) > datetime.now(UTC)
     changed = db.update_goal(goal["id"], name="Review notes", interval_minutes=10080)
     assert changed["name"] == "Review notes"
     assert changed["interval_minutes"] == 10080
-    assert datetime.fromisoformat(changed["next_run_at"]) > datetime.now(timezone.utc)
+    assert datetime.fromisoformat(changed["next_run_at"]) > datetime.now(UTC)

@@ -13,7 +13,16 @@ install -d "$PKG/DEBIAN" "$PKG/usr/lib/nova-x" "$PKG/usr/bin" \
   "$PKG/usr/share/applications" "$PKG/usr/share/icons/hicolor/scalable/apps" \
   "$PKG/usr/share/doc/nova-x-desktop"
 
-install -m 0644 "$ROOT/packaging/debian/control" "$PKG/DEBIAN/control"
+# The packaged control file must carry the same version as pyproject.toml, which
+# also names the output artifact. Copying it verbatim let the two drift apart, so
+# dpkg would install a file named for one version while recording another and
+# silently break later upgrades.
+sed "s/^Version:.*/Version: ${VERSION}/" "$ROOT/packaging/debian/control" > "$PKG/DEBIAN/control"
+chmod 0644 "$PKG/DEBIAN/control"
+CONTROL_VERSION="$(sed -n 's/^Version:[[:space:]]*//p' "$ROOT/packaging/debian/control" | head -n 1)"
+if [ -n "$CONTROL_VERSION" ] && [ "$CONTROL_VERSION" != "$VERSION" ]; then
+  echo "note: packaging/debian/control pins ${CONTROL_VERSION}; stamping ${VERSION} from pyproject.toml" >&2
+fi
 # Install pure-Python application source without bytecode, caches, tests, or local state.
 python3 - "$ROOT/nova" "$PKG/usr/lib/nova-x/nova" <<'PY'
 import shutil

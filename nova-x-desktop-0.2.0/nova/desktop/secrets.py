@@ -3,9 +3,6 @@ from __future__ import annotations
 
 import os
 import re
-from contextlib import contextmanager
-from typing import Iterator
-
 
 SERVICE_NAME = "org.nova-x.desktop"
 SECRET_ENV_NAMES = {
@@ -127,7 +124,7 @@ class SecretStore:
     def configured_status(self) -> dict[str, bool]:
         status = self.backend_status()
         if not status["available"]:
-            return {provider: False for provider in SECRET_ENV_NAMES}
+            return dict.fromkeys(SECRET_ENV_NAMES, False)
         result: dict[str, bool] = {}
         for provider, name in SECRET_ENV_NAMES.items():
             try:

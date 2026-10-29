@@ -7,9 +7,23 @@ From the project root:
 ```bash
 python -m pip install -r requirements.txt -r requirements-dev.txt
 pytest -q
+ruff check .
 node --check static/app.js
 python -m compileall -q nova tests app.py
 ```
+
+Pytest and Ruff are both configured in `pyproject.toml`; there is no separate `pytest.ini` or lint config file to keep in sync.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` (at the repository root) runs on push to `main`, on every pull request, and on demand:
+
+| Job | What it proves |
+|---|---|
+| `quality` | Ruff, byte-compilation, `node --check`, and shell syntax across Python 3.11–3.13 |
+| `test` | The full suite across Python 3.11–3.13 |
+| `desktop-ui` | Installs `libgl1`/`libegl1` so the Qt window test **runs** rather than skips, and fails if it skipped anyway |
+| `package` | Builds the `.deb`, asserts its control `Version` equals `pyproject.toml` and `nova.__version__`, verifies shipped/excluded paths, smoke-tests the extracted CLI, and uploads the artifact |
 
 Automated provider tests use deterministic fake providers/HTTP responses; they require no paid key and do not call external APIs. Coverage includes:
 
@@ -21,11 +35,12 @@ Automated provider tests use deterministic fake providers/HTTP responses; they r
 - Fusion and Maximum call counts, request-budget degradation, configured-rate budget ceiling, and one-model fallback;
 - versioned evaluation scoring and synthetic tool-call checks that do not execute a tool;
 - autonomy A–D decisions, explicit-deny precedence, narrow workspace overwrite scopes, stale-approval rechecks, and Level A plan/tool approval flow;
-- goal CRUD/provenance, disabled-goal suppression, atomic scheduled dispatch/daily cap/no catch-up burst, setup diagnostics, and the seven-case isolated policy benchmark (zero provider/external calls).
+- goal CRUD/provenance, disabled-goal suppression, atomic scheduled dispatch/daily cap/no catch-up burst, setup diagnostics, and the seven-case isolated policy benchmark (zero provider/external calls);
+- `tests/test_regressions.py`: server-side session revocation on logout (a captured cookie must stop working), session-store expiry/cap, tolerant task/goal serialization, app construction that works with no startup event, clean 503 on storage failure, side-effect-free module import, environment wiring for every documented knob, login rate limiting, and per-role fusion reporting including a *failed* synthesis.
 
 ## Native desktop/CLI tests (no provider required)
 
-Automated `tests/test_desktop.py` exercises the process runner on real installed commands in a disposable workspace, not on the user's Kali host. It checks structured-prefix policy, explicit approval, stdout/exit status, timeout/stop, output/history/log redaction, credential-path denial, fake Secret Service behavior/refusal, workspace secret exclusions, task-engine command integration, and exact privileged approval previews. No provider request or `pkexec` action is executed by these tests. `tests/test_desktop_ui.py` is skipped when PySide6 is absent; when Qt is available it creates the native window offscreen and checks all eight staged pages.
+Automated `tests/test_desktop.py` exercises the process runner on real installed commands in a disposable workspace, not on the user's Kali host. It checks structured-prefix policy, explicit approval, stdout/exit status, timeout/stop, output/history/log redaction, credential-path denial, fake Secret Service behavior/refusal, workspace secret exclusions, task-engine command integration, and exact privileged approval previews. No provider request or `pkexec` action is executed by these tests. `tests/test_desktop_ui.py` is skipped when PySide6 is absent **or** when PySide6 is installed but cannot load its Qt libraries (a container missing `libGL`/`libEGL`, which is common in CI). The skip is module-scoped, so it can never abort collection for the rest of the suite — a bare `pytest.importorskip` only handled the missing-package case and previously turned a host without graphics libraries into a whole-suite collection error. When Qt does load, the test creates the native window offscreen and checks all eight staged pages. CI's `desktop-ui` job installs those system libraries and fails if the test still skips.
 
 Package smoke checks:
 

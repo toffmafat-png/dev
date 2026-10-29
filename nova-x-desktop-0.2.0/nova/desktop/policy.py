@@ -13,7 +13,6 @@ from typing import Any
 
 from nova.db import Database
 
-
 DEFAULT_TRUSTED_PREFIXES: list[list[str]] = [
     ["pwd"],
     ["ls"],
@@ -34,7 +33,7 @@ _RESTRICTED_COMMANDS = {
     "dpkg", "nala", "iptables", "ip6tables", "nft", "ufw", "firewall-cmd", "chmod",
     "chown", "chgrp", "useradd", "userdel", "passwd", "modprobe", "insmod", "rmmod",
     "kill", "pkill", "killall", "crontab", "loginctl", "grub-install", "update-grub",
-    "mv", "cp", "install", "truncate", "touch", "mkdir", "rmdir", "tar", "gzip", "bzip2",
+    "mv", "cp", "install", "truncate", "touch", "mkdir", "tar", "gzip", "bzip2",
     "xz", "pip", "pip3", "npm", "npx", "yarn", "pnpm", "curl", "wget", "ssh", "scp",
     "sftp", "nc", "ncat", "netcat", "socat", "telnet", "ftp", "rsync", "docker", "podman",
     "kubectl", "terraform", "ansible", "nmap", "masscan", "nikto", "sqlmap", "msfconsole",
@@ -186,7 +185,7 @@ class CommandPolicy:
         valid: list[list[str]] = []
         for item in raw[:100]:
             if isinstance(item, list) and item and all(isinstance(token, str) and token and len(token) <= 256 for token in item[:16]):
-                valid.append([token for token in item[:16]])
+                valid.append(list(item[:16]))
         return valid
 
     @staticmethod

@@ -3,22 +3,31 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import shutil
 import signal
 import time
-import shlex
 import uuid
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from nova.config import Settings
 from nova.db import Database
-from nova.desktop.policy import AGENT_BLOCKED_PROGRAMS, AGENT_BLOCKED_WRAPPERS, AGENT_ONLY_BLOCKED_PROGRAMS, CommandPolicy, _is_interpreter_program, redact_text, safe_argv_for_history, sensitive_values_from_argv
+from nova.desktop.policy import (
+    AGENT_BLOCKED_PROGRAMS,
+    AGENT_BLOCKED_WRAPPERS,
+    AGENT_ONLY_BLOCKED_PROGRAMS,
+    CommandPolicy,
+    _is_interpreter_program,
+    redact_text,
+    safe_argv_for_history,
+    sensitive_values_from_argv,
+)
 from nova.tools.registry import ToolDefinition, ToolOutcome
-
 
 StreamCallback = Callable[[str, str], None]
 
@@ -196,7 +205,7 @@ class CommandRunner:
         show_script: bool = False,
     ) -> ToolOutcome:
         command_id = str(uuid.uuid4())
-        started = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+        started = datetime.now(UTC).isoformat(timespec="microseconds")
         started_monotonic = time.monotonic()
         executable_display = Path(argv[0]).name
         history_argv = argv[1:]
@@ -259,7 +268,7 @@ class CommandRunner:
         status = "success"
         try:
             await asyncio.wait_for(process.wait(), timeout=max(1, min(int(timeout_seconds), 600)))
-        except asyncio.TimeoutError:
+        except TimeoutError:
             timed_out = True
             status = "timeout"
             await self._terminate(process)
@@ -317,7 +326,7 @@ class CommandRunner:
                 pass
         try:
             await asyncio.wait_for(process.wait(), timeout=2.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
@@ -389,7 +398,7 @@ class CommandRunner:
 
 
 def shlex_join_safe(args: list[str]) -> str:
-    import shlex
+    # `shlex` is imported at module scope; no local re-import is needed.
     return shlex.join(safe_argv_for_history(args))
 
 
@@ -397,7 +406,7 @@ def _approval_preview(args: dict[str, Any], privileged: bool = False) -> dict[st
     program = str(args.get("program", ""))[:200]
     arguments = [str(value) for value in (args.get("arguments") or [])[:32]]
     safe = safe_argv_for_history([program, *arguments])
-    command = " ".join(__import__("shlex").quote(part) for part in safe)
+    command = shlex.join(safe)
     cwd = str(args.get("cwd") or "selected workspace")[:300]
     mode = "polkit-authenticated privileged command" if privileged else "local user command"
     return {
@@ -417,7 +426,8 @@ def build_command_tools(
     database: Database,
     runner: CommandRunner,
 ) -> list[ToolDefinition]:
-    policy = runner.policy
+    # The runner owns policy evaluation; these handlers only translate validated
+    # tool arguments into a structured argv and forward the approval decision.
 
     async def execute(args: BaseModel, approved: bool) -> ToolOutcome:
         values = args.model_dump()

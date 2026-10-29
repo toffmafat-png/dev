@@ -6,9 +6,7 @@ import hashlib
 import json
 import math
 import os
-import re
 import time
-import uuid
 import urllib.parse
 from collections import deque
 from typing import Any
@@ -22,7 +20,6 @@ from nova.model_providers import (
     validate_key_env,
 )
 from nova.provider import OpenAICompatibleProvider, ProviderConfigurationError, ProviderError
-
 
 INTELLIGENCE_MODES: list[dict[str, Any]] = [
     {"id": "fast", "label": "Fast", "description": "One eligible model, prioritizing observed latency. Best for routine, time-sensitive questions."},
@@ -61,7 +58,9 @@ class ModelManager:
         # Keep the legacy singleton provider available to callers/tests, but route
         # configured production providers through the model registry and its safe key references.
         self.injected_provider = None if isinstance(injected_provider, OpenAICompatibleProvider) else injected_provider
-        self.allow_local_http = os.getenv("NOVA_ALLOW_LOCAL_HTTP_PROVIDER", "").strip().lower() in {"1", "true", "yes", "on"}
+        # Read from Settings so every endpoint-safety knob has one source of truth
+        # and is visible to injected/test configurations, not just the process env.
+        self.allow_local_http = bool(settings.allow_local_http_provider)
         self._concurrency = asyncio.Semaphore(settings.max_model_concurrency)
         self._rate_lock = asyncio.Lock()
         self._timestamps: deque[float] = deque()
@@ -112,17 +111,14 @@ class ModelManager:
         }
 
     def get_raw_profile(self, profile_id: str) -> dict[str, Any] | None:
-        if profile_id == ENV_PROFILE_ID:
-            profile = self._environment_profile()
-        else:
-            profile = self.db.get_model_profile(profile_id)
+        is_environment = profile_id == ENV_PROFILE_ID
+        profile = self._environment_profile() if is_environment else self.db.get_model_profile(profile_id)
         if not profile:
             return None
         profile = dict(profile)
-        if profile_id == ENV_PROFILE_ID:
-            state = self.db.get_profile_runtime_state(profile_id)
-        else:
-            state = profile
+        # Environment-derived profiles keep their live availability state in a
+        # separate runtime row; managed profiles carry it on the profile itself.
+        state = self.db.get_profile_runtime_state(profile_id) if is_environment else profile
         profile["availability_status"] = state.get("availability_status", "unknown")
         profile["config_fingerprint"] = state.get("config_fingerprint", profile.get("config_fingerprint", ""))
         profile["availability_checked_at"] = state.get("availability_checked_at", "")
@@ -410,15 +406,15 @@ class ModelManager:
             latency_ms = (time.monotonic() - started) * 1000 if request_started else None
             if request_started:
                 self.db.record_profile_call(profile_id, False, latency_ms, "Request cancelled by NOVA.")
-            setattr(exc, "request_started", request_started)
-            setattr(exc, "latency_ms", round(latency_ms, 1) if latency_ms is not None else None)
+            exc.request_started = request_started
+            exc.latency_ms = round(latency_ms, 1) if latency_ms is not None else None
             raise
         except ProviderError as exc:
             elapsed = (time.monotonic() - started) * 1000
             if request_started:
                 self.db.record_profile_call(profile_id, False, elapsed, str(exc))
-            setattr(exc, "request_started", request_started)
-            setattr(exc, "latency_ms", round(elapsed, 1) if request_started else None)
+            exc.request_started = request_started
+            exc.latency_ms = round(elapsed, 1) if request_started else None
             raise
         except Exception as exc:
             elapsed = (time.monotonic() - started) * 1000
@@ -464,7 +460,7 @@ class ModelManager:
                 models = await adapter.list_models(api_key_env=profile["api_key_env"], base_url=profile["base_url"])
         except ProviderError as exc:
             self.db.record_profile_catalog_status(profile_id, "check_failed", self._profile_fingerprint(profile))
-            setattr(exc, "request_started", True)
+            exc.request_started = True
             raise
         except Exception as exc:
             self.db.record_profile_catalog_status(profile_id, "check_failed", self._profile_fingerprint(profile))
@@ -588,7 +584,7 @@ class ModelManager:
 
         try:
             await asyncio.wait_for(self._run_eval_cases(profile, run_case), timeout=self.settings.max_intelligence_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             cost_complete = False
             usage_complete = False
             cases.append({"name": "evaluation_timeout", "passed": False, "status": "error", "error": "Evaluation exceeded the configured time limit."})
@@ -894,7 +890,7 @@ class IntelligenceOrchestrator:
                 self._fusion_inner(messages, mode, model_ids, max_provider_requests, conversation_id, task_id, run_state),
                 timeout=self.settings.max_intelligence_seconds,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             error = ProviderError(f"{mode} exceeded the configured {self.settings.max_intelligence_seconds}-second intelligence limit.")
             error.provider_requests = int(run_state.get("provider_requests", 0))
             error.models = list(run_state.get("models", []))
@@ -977,7 +973,14 @@ class IntelligenceOrchestrator:
             analysis_outcomes = await asyncio.gather(*(analyze(profile) for profile in candidates))
         except asyncio.CancelledError:
             raise
-        successful = [(profile, outcome[1]) for profile, outcome in zip(candidates, analysis_outcomes) if outcome[1]]
+        # `asyncio.gather` returns exactly one outcome per candidate, in order;
+        # strict=True turns any future divergence into a loud error instead of
+        # silently dropping an analyst's result from the fusion run.
+        successful = [
+            (profile, outcome[1])
+            for profile, outcome in zip(candidates, analysis_outcomes, strict=True)
+            if outcome[1]
+        ]
         if len(successful) < 2:
             if successful:
                 answer = self._message_text(successful[0][1].get("message", {}))
@@ -1037,9 +1040,12 @@ class IntelligenceOrchestrator:
             else:
                 total_cost += float(cost)
             answer = self._message_text(synth_response.get("message", {}))
+            summaries.append({"model_id": synth_profile["id"], "name": synth_profile["name"], "role": "synthesis", "status": "ok", "summary": answer[:700]})
         else:
             answer = self._message_text(successful[0][1].get("message", {}))
             cost_observed_complete = False
+            summaries.append({"model_id": synth_profile["id"], "name": synth_profile["name"], "role": "synthesis", "status": "failed", "summary": synth_error or "Synthesis failed."})
+            warnings.append(f"Integrated synthesis failed: {synth_error or 'provider error'}")
 
         effective = "frontier_fusion" if compare_response else "frontier_fusion_partial"
         degraded_reasons = []
@@ -1096,8 +1102,10 @@ class IntelligenceOrchestrator:
                     else:
                         total_cost += float(cost)
                     effective = "maximum_intelligence" if compare_response else "maximum_intelligence_partial"
+                    summaries.append({"model_id": synth_profile["id"], "name": synth_profile["name"], "role": "revision", "status": "ok", "summary": answer[:700]})
                 else:
                     cost_observed_complete = False
+                    summaries.append({"model_id": synth_profile["id"], "name": synth_profile["name"], "role": "revision", "status": "failed", "summary": final_error or "Final revision failed."})
                     degraded_reasons.append("Critique completed but final revision failed; returned the first integrated synthesis.")
                     warnings.append(f"Final revision failed: {final_error or 'provider error'}")
             else:

@@ -6,9 +6,10 @@ import os
 import shutil
 import tempfile
 import uuid
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Callable
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -195,7 +196,7 @@ def build_workspace_tools(settings: Settings, root_provider: Callable[[], str | 
                 backup_dir.mkdir(exist_ok=True)
                 if len(list(backup_dir.glob("*.bak"))) >= 50:
                     return ToolOutcome("error", "The 50-backup safety limit was reached; archive backups manually before replacing another file.")
-                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
                 backup = backup_dir / f"{stamp}-{uuid.uuid4().hex[:8]}-{path.name}.bak"
                 shutil.copy2(path, backup)
                 temp_path: Path | None = None

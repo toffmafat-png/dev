@@ -1,0 +1,69 @@
+# The Dockerfile copies the build context into the image with `COPY . .`.
+# Without these exclusions the image would embed version-control history,
+# virtual environments, local databases/workspaces, and — critically — any
+# local `.env` file, which would bake operator credentials into image layers.
+
+# --- Version control & CI ---
+.git
+.gitignore
+.gitattributes
+.github/
+
+# --- Python artifacts ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+releases/
+*.deb
+.nova-deb-build.*/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Tooling caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# --- Local runtime state (sensitive) ---
+data/
+workspace/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+command-logs/
+.nova_backups/
+.nova-tmp-*
+
+# --- Secrets: must come from the runtime environment, never the image ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+credentials.json
+token.json
+
+# --- Tests and docs are not needed at runtime ---
+tests/
+docs/
+SOURCE-MANIFEST.txt
+
+# --- Editors / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

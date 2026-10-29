@@ -75,12 +75,13 @@ class Settings:
     verify_tasks: bool = True
     access_token: str = ""
     allow_custom_provider_endpoints: bool = False
+    allow_local_http_provider: bool = False
     session_ttl_seconds: int = 8 * 60 * 60
     tavily_api_key: str = ""
     max_chat_history_messages: int = 20
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         data_dir = Path(os.getenv("NOVA_DATA_DIR", "./data")).expanduser()
         workspace_dir = Path(os.getenv("NOVA_WORKSPACE_DIR", "./workspace")).expanduser()
         db_path = Path(os.getenv("NOVA_DB_PATH", str(data_dir / "nova.sqlite3"))).expanduser()
@@ -136,8 +137,10 @@ class Settings:
             verify_tasks=_bool_env("NOVA_VERIFY_TASKS", True),
             access_token=access_token,
             allow_custom_provider_endpoints=_bool_env("NOVA_ALLOW_CUSTOM_PROVIDER_ENDPOINTS", False),
+            allow_local_http_provider=_bool_env("NOVA_ALLOW_LOCAL_HTTP_PROVIDER", False),
             session_ttl_seconds=_int_env("NOVA_SESSION_TTL_SECONDS", 8 * 60 * 60, 300, 30 * 24 * 60 * 60),
             tavily_api_key=os.getenv("TAVILY_API_KEY", "").strip(),
+            max_chat_history_messages=_int_env("NOVA_MAX_CHAT_HISTORY_MESSAGES", 20, 1, 200),
         )
 
     @property
