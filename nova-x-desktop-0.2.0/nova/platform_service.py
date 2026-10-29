@@ -277,7 +277,9 @@ class PlatformService:
             workspace_dir=workspace_dir,
             redactor=self.redactor,
             scheduler_active_probe=lambda: self.unified_os.worker.status().get("status") == "running",
+            resource_manager=self.resources,
         )
+        self.unified_os.worker.monitor_tick_fn = self.privacy_intel.monitors.run_due_monitors
         for pi_tool in build_privacy_intel_tools(lambda: self.privacy_intel):
             if self.tools.get(pi_tool.name) is None:
                 self.tools.register(pi_tool)

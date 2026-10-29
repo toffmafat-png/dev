@@ -570,6 +570,7 @@ class DarkWebResearchAssistant:
         *,
         explicit_urls: list[str] | None = None,
         categories: list[str] | None = None,
+        independent_model_reviews: list[dict[str, Any]] | None = None,
         save_to_kb: bool = True,
     ) -> dict[str, Any]:
         started_at = _iso()
@@ -672,10 +673,26 @@ class DarkWebResearchAssistant:
         if not hypotheses and all_hits:
             hypotheses.append("Available observations are internally consistent so far, subject to the recorded coverage limitations.")
 
-        # Optional multi-model synthesis note (explicitly enforcing MULTI_MODEL_AGREEMENT_IS_PROOF = False)
+        # Step 9b: Multi-model reasoning & cognition review (strictly enforcing MULTI_MODEL_AGREEMENT_IS_PROOF = False)
+        reviews_input = list(independent_model_reviews or [])
+        models_concurring = sum(1 for r in reviews_input if bool(r.get("agrees_with_claim")))
+        cognition_attached = self.cognition is not None
+        if self.cognition is not None and hasattr(self.cognition, "record_claim"):
+            try:
+                for vf in verified_facts[:5]:
+                    self.cognition.record_claim(claim=vf[:240], status="verified", evidence="authoritative_source")
+            except Exception:
+                pass
         multi_model_review = {
+            "cognition_engine_integrated": cognition_attached,
+            "independent_reviews_evaluated": len(reviews_input),
+            "models_concurring_on_unverified_claims": models_concurring,
+            "promoted_unverified_claims_from_consensus": 0,
             "multi_model_agreement_treated_as_proof": MULTI_MODEL_AGREEMENT_IS_PROOF,
-            "note": "Model synthesis summarizes retrieved evidence only; agreement between models never upgrades an unverified claim to a verified fact (§165.4).",
+            "note": (
+                "Independent model reviews assist critique and hypothesis generation only; "
+                "agreement among models never upgrades an unverified claim to `verified_facts` (§165.4)."
+            ),
         }
 
         # Step 12: Record any part of the research that could not be completed
@@ -853,7 +870,7 @@ class DarkWebResearchAssistant:
 
 
 class AutonomousResearchMonitor:
-    """§165.10 Scoped, Rate-Limited, Restart-Persistent Research & Threat Monitoring."""
+    """§165.10 Scoped, Rate-Limited, Resource-Aware, Restart-Persistent Research & Threat Monitoring."""
 
     def __init__(
         self,
@@ -861,10 +878,12 @@ class AutonomousResearchMonitor:
         db: Database,
         search_orchestrator: UnifiedSearchOrchestrator,
         scheduler_active_probe: Callable[[], bool] | None = None,
+        resource_manager: Any | None = None,
     ) -> None:
         self.db = db
         self.search = search_orchestrator
         self._scheduler_active_probe = scheduler_active_probe or (lambda: False)
+        self._resource_manager = resource_manager
         self._run_timestamps_by_monitor: dict[str, list[float]] = {}
 
     def create_monitor(
@@ -923,6 +942,19 @@ class AutonomousResearchMonitor:
         if not mon["enabled"] and not force:
             return {"ok": False, "status": "monitor_disabled", "monitor_id": monitor_id}
 
+        if self._resource_manager is not None and not force:
+            try:
+                budget = self._resource_manager.assess()
+                if getattr(budget, "pressure", "") == "critical":
+                    return {
+                        "ok": False,
+                        "status": "deferred_resource_budget",
+                        "monitor_id": monitor_id,
+                        "reason": "Host resource pressure is critical; recurring research monitor deferred to respect resource budget (§165.10).",
+                    }
+            except Exception:
+                pass
+
         now_mono = time.monotonic()
         recent = [t for t in self._run_timestamps_by_monitor.get(monitor_id, []) if now_mono - t < 3600.0]
         if len(recent) >= int(mon["rate_limit_per_hour"]) and not force:
@@ -980,3 +1012,19 @@ class AutonomousResearchMonitor:
             "search_run_id": sres["search_run_id"],
             "continuous_monitoring_active": bool(self._scheduler_active_probe()),
         }
+
+    def run_due_monitors(self) -> list[dict[str, Any]]:
+        """Execute enabled monitors whose `interval_seconds` have elapsed since `last_run_at`."""
+        now_dt = datetime.now(UTC)
+        executed: list[dict[str, Any]] = []
+        for mon in self.db.list_research_monitors(enabled_only=True):
+            due = True
+            if mon.get("last_run_at"):
+                try:
+                    last_dt = datetime.fromisoformat(str(mon["last_run_at"]))
+                    due = (now_dt - last_dt).total_seconds() >= float(mon["interval_seconds"])
+                except ValueError:
+                    due = True
+            if due:
+                executed.append(self.run_monitor_once(mon["id"]))
+        return executed

@@ -59,6 +59,7 @@ class PrivacyIntelligenceService:
         redactor: Redactor,
         cognition: Any | None = None,
         scheduler_active_probe: Callable[[], bool] | None = None,
+        resource_manager: Any | None = None,
     ) -> None:
         self.db = db
         self.knowledge = knowledge
@@ -101,7 +102,59 @@ class PrivacyIntelligenceService:
             db=db,
             search_orchestrator=self.search,
             scheduler_active_probe=scheduler_active_probe,
+            resource_manager=resource_manager,
         )
+
+    def plan_intelligence_routing(
+        self,
+        objective: str,
+        *,
+        registered_tool_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """§165.11 Determine which of the 8 intelligence/source dimensions a task needs
+        and select the smallest sufficient collection of registered tools.
+        """
+        ol = objective.lower()
+        needs = {
+            "ordinary_web_search": any(k in ol for k in ("http://", "https://", "website", "search web", "news", "public web")) and ".onion" not in ol,
+            "official_documentation": any(k in ol for k in ("docs", "documentation", "manual", "rfc", "specification", "api reference")),
+            "permitted_onion_service": any(k in ol for k in (".onion", "onion service", "tor hidden", "dark web")),
+            "cybersecurity_intelligence": any(k in ol for k in ("cve-", "advisory", "vulnerability", "ioc", "threat", "breach", "exposure", "malware")),
+            "local_file": any(k in ol for k in ("workspace", "file", "read ", "write ", "archive", ".txt", ".md", ".py", ".json", ".log")),
+            "specialist_model": any(k in ol for k in ("compare models", "review", "deep analysis", "synthesize", "verify hypothesis")),
+            "local_diagnostic_tool": any(k in ol for k in ("hardware", "driver", "cpu", "memory", "tor status", "diagnostics", "disk")),
+            "remote_service_connection": any(k in ol for k in ("ssh", "remote server", "remote node", "registered server")),
+        }
+        if not any(needs.values()):
+            needs["local_file"] = True
+
+        candidate_tools: list[str] = []
+        if needs["ordinary_web_search"] or needs["official_documentation"]:
+            candidate_tools.extend(["research.web_search", "advanced_internet_search"])
+        if needs["permitted_onion_service"]:
+            candidate_tools.extend(["tor_status_and_dashboard", "onion_open_page", "onion_verify_reference", "dark_web_research_report"])
+        if needs["cybersecurity_intelligence"]:
+            candidate_tools.extend(["threat_intel_analyze", "advanced_internet_search", "dark_web_research_report"])
+        if needs["local_file"]:
+            candidate_tools.extend(["workspace.list_files", "workspace.read_file", "workspace.write_file"])
+        if needs["local_diagnostic_tool"]:
+            candidate_tools.extend(["tor_status_and_dashboard", "hardware_explore", "system_health_observability"])
+        if needs["remote_service_connection"]:
+            candidate_tools.append("remote_servers_audit")
+
+        available_set = set(registered_tool_names) if registered_tool_names is not None else None
+        minimum_tools: list[str] = []
+        for t in candidate_tools:
+            if t not in minimum_tools and (available_set is None or t in available_set):
+                minimum_tools.append(t)
+
+        return {
+            "needs": needs,
+            "minimum_sufficient_tools": minimum_tools,
+            "invokes_tor": bool(needs["permitted_onion_service"] and self.tor.get_config()["tor_enabled"]),
+            "requires_specialist_model_review": needs["specialist_model"] or needs["cybersecurity_intelligence"],
+            "policy_bypass_allowed": False,
+        }
 
     def check_ethics(self, text: str) -> dict[str, Any]:
         return check_request_ethics_guardrail(text)

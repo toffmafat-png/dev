@@ -309,6 +309,56 @@ async def test_tool_registry_autonomy_gating_api_routes_and_cli(privacy_env, tmp
     assert osint_stdout["single_engine_indexes_entire_dark_web"] is False
 
 
+def test_section_165_11_eight_dimension_routing_and_multi_model_non_promotion(privacy_env):
+    _settings, _db, svc = privacy_env
+    # 1. Ordinary file/docs objective does NOT invoke Tor
+    r_local = svc.plan_intelligence_routing(
+        "Read workspace README.md and check official documentation",
+        registered_tool_names=["workspace.read_file", "advanced_internet_search", "onion_open_page"],
+    )
+    assert r_local["needs"]["local_file"] is True
+    assert r_local["needs"]["official_documentation"] is True
+    assert r_local["needs"]["permitted_onion_service"] is False
+    assert "onion_open_page" not in r_local["minimum_sufficient_tools"]
+    assert r_local["policy_bypass_allowed"] is False
+
+    # 2. Onion + CVE objective selects minimum sufficient Tor & threat tools
+    r_onion = svc.plan_intelligence_routing(
+        "Verify .onion mirror for CVE-2026-4242 advisory and audit remote server over SSH",
+        registered_tool_names=["tor_status_and_dashboard", "onion_open_page", "threat_intel_analyze", "remote_servers_audit"],
+    )
+    assert r_onion["needs"]["permitted_onion_service"] is True
+    assert r_onion["needs"]["cybersecurity_intelligence"] is True
+    assert r_onion["needs"]["remote_service_connection"] is True
+    assert set(r_onion["minimum_sufficient_tools"]) == {
+        "tor_status_and_dashboard",
+        "onion_open_page",
+        "threat_intel_analyze",
+        "remote_servers_audit",
+    }
+
+    # 3. Multi-model consensus NEVER upgrades an unverified claim to `verified_facts`
+    svc.knowledge.index_text(
+        "Unverified claim: vendor-x compromised!",
+        document_id="ext:unverified-post",
+        title="Unverified Post",
+        source_kind="external_source",
+        external=True,
+    )
+    rep = svc.research_assistant.conduct_research(
+        "Assess vendor-x claim",
+        independent_model_reviews=[
+            {"model": "m1", "agrees_with_claim": True},
+            {"model": "m2", "agrees_with_claim": True},
+            {"model": "m3", "agrees_with_claim": True},
+        ],
+    )
+    assert rep["multi_model_review"]["models_concurring_on_unverified_claims"] == 3
+    assert rep["multi_model_review"]["promoted_unverified_claims_from_consensus"] == 0
+    assert rep["epistemic_separation"]["verified_facts"] == []
+    assert len(rep["epistemic_separation"]["claims"]) >= 1
+
+
 def test_full_section_165_13_acceptance_suite():
     report = run_acceptance_suite()
     assert report["all_passed"] is True

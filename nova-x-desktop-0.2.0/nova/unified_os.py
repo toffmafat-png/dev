@@ -49,11 +49,17 @@ def _pid_alive(pid: int) -> bool:
 
 
 class BackgroundWorkerSupervisor:
-    """§16 & §20 Tracks and runs durable user-level background job ticks honestly."""
+    """§16, §20 & §165.10 Tracks and runs durable user-level background job ticks honestly."""
 
-    def __init__(self, db: Database, max_scheduled_runs_per_day: int = 5) -> None:
+    def __init__(
+        self,
+        db: Database,
+        max_scheduled_runs_per_day: int = 5,
+        monitor_tick_fn: Any | None = None,
+    ) -> None:
         self.db = db
         self.max_scheduled_runs_per_day = max(0, int(max_scheduled_runs_per_day))
+        self.monitor_tick_fn = monitor_tick_fn
 
     def status(self, stale_after_seconds: float = 90.0) -> dict[str, Any]:
         rows = self.db.list_worker_heartbeats()
@@ -86,15 +92,21 @@ class BackgroundWorkerSupervisor:
     def tick_once(self, worker_id: str = "cli-user-worker") -> dict[str, Any]:
         pid = os.getpid()
         due = self.db.dispatch_due_goals(self.max_scheduled_runs_per_day) if self.max_scheduled_runs_per_day > 0 else []
+        executed_monitors: list[dict[str, Any]] = []
+        if callable(self.monitor_tick_fn):
+            try:
+                executed_monitors = list(self.monitor_tick_fn() or [])
+            except Exception:
+                executed_monitors = []
         hb = self.db.upsert_worker_heartbeat(
             worker_id,
             pid=pid,
             mode="user_worker",
             status="running",
-            dispatched_count=len(due),
-            detail=f"Checked scheduled goals; dispatched {len(due)} task(s).",
+            dispatched_count=len(due) + len(executed_monitors),
+            detail=f"Checked scheduled goals ({len(due)}) and research monitors ({len(executed_monitors)}).",
         )
-        return {"worker": hb, "dispatched_tasks": due}
+        return {"worker": hb, "dispatched_tasks": due, "executed_monitors": executed_monitors}
 
     def mark_stopped(self, worker_id: str = "cli-user-worker") -> dict[str, Any]:
         return self.db.upsert_worker_heartbeat(

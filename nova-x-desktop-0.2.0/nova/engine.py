@@ -148,6 +148,7 @@ class TaskEngine:
             autonomy_policy=self.autonomy_policy,
         )
         self.platform.unified_os.cognition = self.cognition
+        self.platform.privacy_intel.research_assistant.cognition = self.cognition
 
     def launch(self, task_id: str) -> None:
         job = self._jobs.get(task_id)
@@ -197,6 +198,10 @@ class TaskEngine:
                 if not checkpoint.get("plan"):
                     self.db.update_task(task_id, state="planning", error="")
                     self.db.add_event(task_id, "status", "Planning the requested outcome.")
+                    checkpoint["capability_routing"] = self.platform.privacy_intel.plan_intelligence_routing(
+                        task["objective"],
+                        registered_tool_names=[t["name"] for t in self.tools.all_tools() if t.get("available")],
+                    )
                     prompt = [
                         {
                             "role": "system",
@@ -521,6 +526,7 @@ class TaskEngine:
             raise TaskLimitError(
                 f"Task reached the configured {self.settings.max_context_chars}-character provider-context limit."
             )
+        safe_messages = self.platform.redactor.scrub(messages, max_chars=0)
         for attempt in range(self.settings.max_retries + 1):
             current_requests = int(checkpoint.get("request_count", 0))
             remaining_requests = self.settings.max_ai_requests_per_task - current_requests
@@ -530,7 +536,7 @@ class TaskEngine:
             try:
                 if getattr(self.provider, "supports_intelligence_routing", False):
                     response = await self.provider.chat(
-                        messages,
+                        safe_messages,
                         mode=checkpoint.get("intelligence_mode", "balanced"),
                         model_ids=checkpoint.get("selected_model_ids") or None,
                         tools=tools,
@@ -538,7 +544,7 @@ class TaskEngine:
                         task_id=task_id,
                     )
                 else:
-                    response = await self.provider.chat(messages, tools)
+                    response = await self.provider.chat(safe_messages, tools)
                 message = response.get("message")
                 if not isinstance(message, dict):
                     raise ProviderError("AI provider returned an invalid message format.")
