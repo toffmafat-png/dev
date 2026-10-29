@@ -12,7 +12,6 @@ from nova.desktop.policy import CommandPolicy, redact_text
 from nova.desktop.secrets import SecretStore, SecretStoreError
 from nova.engine import TaskEngine
 from nova.tools import ToolRegistry
-from nova.tools.registry import ToolOutcome
 
 
 class FakeProvider:

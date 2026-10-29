@@ -6,11 +6,25 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-PySide6 = pytest.importorskip("PySide6")
-from PySide6.QtWidgets import QApplication
+# PySide6 can be installed but still fail to import when the host lacks the
+# system graphics libraries Qt links against (libGL/libEGL), which is common in
+# containers and CI. `importorskip` alone only covers a *missing* package and
+# would abort collection for the whole suite, so every Qt import failure is
+# turned into a skip for this module instead.
+_QT_IMPORT_ERROR = ""
+try:  # pragma: no cover - depends on host graphics stack
+    import PySide6  # noqa: F401  # imported to probe availability, not used directly
+    from PySide6.QtWidgets import QApplication
 
-from nova.desktop.app import NovaWindow, UiBridge
-from nova.desktop.runtime import DesktopRuntime
+    from nova.desktop.app import NovaWindow, UiBridge
+    from nova.desktop.runtime import DesktopRuntime
+except ImportError as exc:  # pragma: no cover - depends on host graphics stack
+    _QT_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+    pytest.skip(
+        f"PySide6/Qt is unavailable on this host ({_QT_IMPORT_ERROR}); "
+        "skipping native desktop UI tests.",
+        allow_module_level=True,
+    )
 
 
 @pytest.fixture(scope="module")

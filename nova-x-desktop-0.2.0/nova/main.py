@@ -6,10 +6,10 @@ import hmac
 import logging
 import os
 import secrets
+import sqlite3
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,16 +18,22 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from nova import __version__
 from nova.autonomy import AutonomyPolicy, run_autonomy_benchmark
 from nova.config import Settings
 from nova.db import Database
 from nova.engine import TERMINAL_STATES, TaskEngine
-from nova.intelligence import INTELLIGENCE_MODES, IntelligenceOrchestrator, ModelManager, VALID_MODES
+from nova.intelligence import INTELLIGENCE_MODES, VALID_MODES, IntelligenceOrchestrator, ModelManager
 from nova.provider import ProviderConfigurationError, ProviderError
 from nova.tools import ToolRegistry, build_calculator_tool, build_research_tool, build_workspace_tools
 
 logger = logging.getLogger("nova")
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+# In-memory single-user session store bounds. Sessions are revoked on logout and
+# expired entries are pruned, so a long-lived process cannot grow this without limit.
+MAX_ACTIVE_SESSIONS = 1_000
+SESSION_PRUNE_INTERVAL_SECONDS = 60.0
 
 
 class ChatRequest(BaseModel):
@@ -125,6 +131,8 @@ class LoginRequest(BaseModel):
 
 
 def _public_task(task: dict[str, Any], events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    # Defensive reads: a partially populated row must degrade into a well-formed
+    # payload instead of raising KeyError and returning an opaque HTTP 500.
     checkpoint = task.get("checkpoint") or {}
     pending = None
     kind = checkpoint.get("waiting_kind")
@@ -139,9 +147,9 @@ def _public_task(task: dict[str, Any], events: list[dict[str, Any]] | None = Non
     elif kind == "plan_review":
         pending = {"kind": "plan_review", "summary": "Review or edit this plan before execution."}
     result = {
-        "id": task["id"],
-        "objective": task["objective"],
-        "state": task["state"],
+        "id": task.get("id", ""),
+        "objective": task.get("objective", ""),
+        "state": task.get("state", "unknown"),
         "plan": task.get("plan", []),
         "result": task.get("result", ""),
         "error": task.get("error", ""),
@@ -159,12 +167,19 @@ def _public_task(task: dict[str, Any], events: list[dict[str, Any]] | None = Non
         "origin": checkpoint.get("origin", {}),
         "review_plan": task.get("review_plan", False),
         "pending_approval": pending,
-        "created_at": task["created_at"],
-        "updated_at": task["updated_at"],
+        "created_at": task.get("created_at", ""),
+        "updated_at": task.get("updated_at", ""),
     }
     if events is not None:
         result["events"] = events
     return result
+
+
+def _require_task(task: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a usable task row or raise a precise HTTP error instead of a 500."""
+    if not task or not task.get("id"):
+        raise HTTPException(status_code=500, detail="The task record could not be read back from storage.")
+    return task
 
 
 def _public_goal(goal: dict[str, Any]) -> dict[str, Any]:
@@ -178,9 +193,9 @@ def _public_goal(goal: dict[str, Any]) -> dict[str, Any]:
     else:
         cadence = f"Every {interval} minutes"
     return {
-        "id": goal["id"],
-        "name": goal["name"],
-        "objective": goal["objective"],
+        "id": goal.get("id", ""),
+        "name": goal.get("name", ""),
+        "objective": goal.get("objective", ""),
         "interval_minutes": interval,
         "cadence": cadence,
         "enabled": bool(goal.get("enabled", False)),
@@ -191,6 +206,65 @@ def _public_goal(goal: dict[str, Any]) -> dict[str, Any]:
         "created_at": goal.get("created_at", ""),
         "updated_at": goal.get("updated_at", ""),
     }
+
+
+class SessionStore:
+    """Bounded in-memory session table for the optional single-user access gate.
+
+    Sessions are explicitly revoked on logout, expired entries are pruned, and the
+    total number of live sessions is capped so a long-lived process cannot be grown
+    without limit by repeated logins.
+    """
+
+    __slots__ = ("_expiry", "_last_prune", "max_sessions")
+
+    def __init__(self, max_sessions: int = MAX_ACTIVE_SESSIONS) -> None:
+        # session_id -> absolute expiry timestamp. Sessions use a fixed TTL rather
+        # than a sliding one, so no last-seen bookkeeping is required.
+        self._expiry: dict[str, float] = {}
+        self._last_prune = 0.0
+        self.max_sessions = max(1, int(max_sessions))
+
+    def __len__(self) -> int:
+        return len(self._expiry)
+
+    def prune(self, now: float | None = None) -> None:
+        """Drop expired sessions; rate-limited so hot paths stay cheap."""
+        current = time.time() if now is None else now
+        if current - self._last_prune < SESSION_PRUNE_INTERVAL_SECONDS:
+            return
+        self._last_prune = current
+        for key in [key for key, expiry in self._expiry.items() if expiry <= current]:
+            self._expiry.pop(key, None)
+
+    def issue(self, ttl_seconds: int) -> str:
+        now = time.time()
+        self.prune(now)
+        while len(self._expiry) >= self.max_sessions:
+            # Evict the session closest to expiry; never silently drop a fresh one.
+            oldest = min(self._expiry, key=self._expiry.get)
+            self._expiry.pop(oldest, None)
+        session_id = secrets.token_urlsafe(32)
+        self._expiry[session_id] = now + max(1, int(ttl_seconds))
+        return session_id
+
+    def validate(self, session_id: str) -> bool:
+        if not session_id:
+            return False
+        now = time.time()
+        expiry = self._expiry.get(session_id)
+        if expiry is None:
+            return False
+        if expiry <= now:
+            self.revoke(session_id)
+            return False
+        return True
+
+    def revoke(self, session_id: str) -> bool:
+        """Remove a session server-side so a copied cookie stops working at once."""
+        if not session_id:
+            return False
+        return self._expiry.pop(session_id, None) is not None
 
 
 def create_app(
@@ -211,8 +285,15 @@ def create_app(
     ai_provider = IntelligenceOrchestrator(model_manager, settings, database)
     autonomy_policy = AutonomyPolicy(settings, database, registry)
     engine = TaskEngine(database, ai_provider, registry, settings, autonomy_policy)
-    sessions: dict[str, float] = {}
+    # Create storage roots eagerly rather than only in `lifespan`: the app must also
+    # work when it is mounted or exercised without a startup event (test clients,
+    # sub-applications), which previously surfaced as an opaque HTTP 500.
+    # `Database.initialize()` is idempotent, so `lifespan` still re-affirms it.
+    settings.ensure_dirs()
+    database.initialize()
+    sessions = SessionStore()
     request_windows: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+    window_last_seen: dict[tuple[str, str], float] = {}
     limiter_lock = asyncio.Lock()
 
     async def goal_scheduler_loop() -> None:
@@ -230,7 +311,7 @@ def create_app(
             await asyncio.sleep(settings.goal_scheduler_poll_seconds)
 
     @asynccontextmanager
-    async def lifespan(_app: FastAPI):
+    async def lifespan(startup_app: FastAPI):
         settings.ensure_dirs()
         database.initialize()
         recovered = database.recover_interrupted_tasks()
@@ -240,9 +321,9 @@ def create_app(
         scheduler_enabled = settings.goal_scheduler_enabled and settings.max_scheduled_goal_runs_per_day > 0
         if scheduler_enabled:
             scheduler_task = asyncio.create_task(goal_scheduler_loop(), name="nova-goal-scheduler")
-            app.state.goal_scheduler_status = "in_process"
+            startup_app.state.goal_scheduler_status = "in_process"
         else:
-            app.state.goal_scheduler_status = "disabled"
+            startup_app.state.goal_scheduler_status = "disabled"
         try:
             yield
         finally:
@@ -253,7 +334,7 @@ def create_app(
                 except asyncio.CancelledError:
                     pass
 
-    app = FastAPI(title="NOVA X", version="0.2.0", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app = FastAPI(title="NOVA X", version=__version__, docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.settings = settings
     app.state.db = database
     app.state.provider = ai_provider
@@ -267,6 +348,16 @@ def create_app(
     app.state.goal_scheduler_limit_per_day = settings.max_scheduled_goal_runs_per_day
     app.state.sessions = sessions
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    @app.exception_handler(sqlite3.Error)
+    async def storage_unavailable(_request: Request, exc: sqlite3.Error) -> JSONResponse:
+        # Storage failures are reported as a clean, retryable 503 with no driver
+        # detail (file paths/SQL text can leak host layout).
+        logger.error("SQLite storage failure: %s", type(exc).__name__)
+        return JSONResponse(
+            {"detail": "Local storage is unavailable. Check the configured NOVA_DATA_DIR volume and permissions."},
+            status_code=503,
+        )
 
     @app.middleware("http")
     async def security_middleware(request: Request, call_next):
@@ -283,9 +374,7 @@ def create_app(
             public_auth = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/logout"}
             if settings.access_token and path not in public_auth:
                 session_id = request.cookies.get("nova_session", "")
-                expiry = sessions.get(session_id)
-                if not expiry or expiry <= time.time():
-                    sessions.pop(session_id, None)
+                if not sessions.validate(session_id):
                     return JSONResponse({"detail": "Authentication required. Please sign in again."}, status_code=401)
 
             client_ip = request.client.host if request.client else "unknown"
@@ -300,11 +389,18 @@ def create_app(
                 if len(window) >= maximum:
                     return JSONResponse({"detail": "Request rate limit reached. Wait briefly and try again."}, status_code=429)
                 window.append(now)
-                # Bound limiter memory in long-lived processes.
+                window_last_seen[window_key] = now
+                # Bound limiter memory in long-lived processes: drop windows whose
+                # entries have all aged out, plus keys that have gone quiet.
                 if len(request_windows) > 2000:
-                    for key in list(request_windows)[:500]:
-                        if not request_windows[key]:
+                    for key in list(request_windows):
+                        stale_window = request_windows[key]
+                        while stale_window and now - stale_window[0] > window_seconds:
+                            stale_window.popleft()
+                        idle_for = now - window_last_seen.get(key, now)
+                        if not stale_window and idle_for > 300:
                             request_windows.pop(key, None)
+                            window_last_seen.pop(key, None)
         return await call_next(request)
 
     @app.get("/", include_in_schema=False)
@@ -319,7 +415,7 @@ def create_app(
             "status": "ok" if storage_healthy else "degraded",
             "storage_healthy": storage_healthy,
             "app": "NOVA X",
-            "version": "0.2.0",
+            "version": __version__,
             "provider_configured": any(item["configured"] for item in model_statuses),
             "provider": "Multi-provider model registry",
             "model": settings.ai_model if settings.ai_configured else None,
@@ -378,11 +474,7 @@ def create_app(
         if not settings.access_token:
             return {"required": False, "authenticated": True}
         session_id = request.cookies.get("nova_session", "")
-        expiry = sessions.get(session_id, 0)
-        authenticated = bool(expiry > time.time())
-        if not authenticated:
-            sessions.pop(session_id, None)
-        return {"required": True, "authenticated": authenticated}
+        return {"required": True, "authenticated": sessions.validate(session_id)}
 
     @app.post("/api/auth/login")
     async def auth_login(body: LoginRequest, request: Request, response: Response) -> dict[str, bool]:
@@ -390,8 +482,7 @@ def create_app(
             return {"required": False, "authenticated": True}
         if not hmac.compare_digest(body.token.encode("utf-8"), settings.access_token.encode("utf-8")):
             raise HTTPException(status_code=401, detail="Invalid access token.")
-        session_id = secrets.token_urlsafe(32)
-        sessions[session_id] = time.time() + settings.session_ttl_seconds
+        session_id = sessions.issue(settings.session_ttl_seconds)
         forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
         secure = request.url.scheme == "https" or forwarded_proto == "https"
         response.set_cookie(
@@ -406,9 +497,12 @@ def create_app(
         return {"required": True, "authenticated": True}
 
     @app.post("/api/auth/logout")
-    async def auth_logout(response: Response) -> dict[str, bool]:
+    async def auth_logout(request: Request, response: Response) -> dict[str, bool]:
+        # Revoke server-side as well as clearing the cookie: otherwise a copied
+        # session cookie keeps working until its original TTL expires.
+        revoked = sessions.revoke(request.cookies.get("nova_session", ""))
         response.delete_cookie("nova_session", path="/", httponly=True, samesite="strict")
-        return {"ok": True}
+        return {"ok": True, "revoked": revoked}
 
     @app.get("/api/tools")
     async def get_tools() -> dict[str, Any]:
@@ -427,7 +521,7 @@ def create_app(
                 body.authorized_overwrite_prefixes,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"policy": policy}
 
     @app.post("/api/autonomy/benchmark")
@@ -447,7 +541,7 @@ def create_app(
         try:
             profile = model_manager.create_profile(body.model_dump())
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"model": profile}
 
     @app.put("/api/models/{profile_id}")
@@ -457,7 +551,7 @@ def create_app(
         try:
             profile = model_manager.update_profile(profile_id, payload)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         if not profile:
             raise HTTPException(status_code=404, detail="Managed model profile not found.")
         return {"model": profile}
@@ -467,7 +561,7 @@ def create_app(
         try:
             deleted = model_manager.delete_profile(profile_id)
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         if not deleted:
             raise HTTPException(status_code=404, detail="Managed model profile not found.")
         return {"deleted": True}
@@ -484,33 +578,33 @@ def create_app(
         try:
             return await model_manager.test_connection(profile_id)
         except KeyError:
-            raise HTTPException(status_code=404, detail="Model profile not found.")
+            raise HTTPException(status_code=404, detail="Model profile not found.") from None
         except ProviderConfigurationError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ProviderError as exc:
-            raise HTTPException(status_code=502, detail=str(exc))
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/api/models/{profile_id}/catalog")
     async def get_model_catalog(profile_id: str) -> dict[str, Any]:
         try:
             return await model_manager.list_catalog(profile_id)
         except KeyError:
-            raise HTTPException(status_code=404, detail="Model profile not found.")
+            raise HTTPException(status_code=404, detail="Model profile not found.") from None
         except ProviderConfigurationError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ProviderError as exc:
-            raise HTTPException(status_code=502, detail=str(exc))
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/api/models/{profile_id}/evaluate")
     async def evaluate_model_profile(profile_id: str) -> dict[str, Any]:
         try:
             return await model_manager.evaluate(profile_id)
         except KeyError:
-            raise HTTPException(status_code=404, detail="Model profile not found.")
+            raise HTTPException(status_code=404, detail="Model profile not found.") from None
         except ProviderConfigurationError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ProviderError as exc:
-            raise HTTPException(status_code=502, detail=str(exc))
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/api/models/evaluations")
     async def model_evaluations(profile_id: str | None = None, limit: int = 30) -> dict[str, Any]:
@@ -543,7 +637,7 @@ def create_app(
         try:
             feedback_id = database.add_intelligence_feedback(body.run_id, body.rating, body.comment.strip())
         except KeyError:
-            raise HTTPException(status_code=404, detail="Intelligence run not found.")
+            raise HTTPException(status_code=404, detail="Intelligence run not found.") from None
         return {"id": feedback_id, "saved": True, "note": "Feedback is stored locally for evaluation and routing analysis; it does not train model weights."}
 
     @app.get("/api/goals")
@@ -606,7 +700,10 @@ def create_app(
             raise HTTPException(status_code=404, detail="Goal not found.")
         engine.launch(task_id)
         task = database.get_task(task_id)
-        return {"task": _public_task(task or {}), "goal": _public_goal(database.get_goal(goal_id) or goal)}
+        return {
+            "task": _public_task(_require_task(task)),
+            "goal": _public_goal(database.get_goal(goal_id) or goal),
+        }
 
     @app.get("/api/tasks")
     async def get_tasks(limit: int = 50) -> dict[str, Any]:
@@ -630,9 +727,9 @@ def create_app(
             selected_model_ids=model_ids,
         )
         database.add_event(task_id, "status", "Task queued from an explicit user request.")
-        engine.launch(task_id)
         task = database.get_task(task_id)
-        return _public_task(task or {})
+        engine.launch(task_id)
+        return _public_task(_require_task(task))
 
     @app.get("/api/tasks/{task_id}")
     async def get_task(task_id: str) -> dict[str, Any]:
@@ -745,7 +842,7 @@ def create_app(
         try:
             user_msg = database.add_message(conversation_id, "user", user_text)
         except KeyError:
-            raise HTTPException(status_code=404, detail="Conversation not found.")
+            raise HTTPException(status_code=404, detail="Conversation not found.") from None
         history = database.get_messages(conversation_id, settings.max_chat_history_messages)
         # Approximate context budgeting: retain the newest turns under a character
         # ceiling, while the canonical transcript remains saved in SQLite.
@@ -786,9 +883,9 @@ def create_app(
                 conversation_id=conversation_id,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except ProviderConfigurationError as exc:
-            raise HTTPException(status_code=503, detail=str(exc))
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ProviderError as exc:
             attempted_models = getattr(exc, "models", [])
             if isinstance(attempted_models, list) and attempted_models:
@@ -804,7 +901,7 @@ def create_app(
                 }
             else:
                 detail = str(exc)
-            raise HTTPException(status_code=502, detail=detail)
+            raise HTTPException(status_code=502, detail=detail) from exc
         message = response.get("message", {})
         answer = message.get("content", "") if isinstance(message, dict) else ""
         if not isinstance(answer, str):
@@ -825,7 +922,7 @@ def create_app(
         try:
             return {"conversation_id": conversation_id, "messages": database.get_messages(conversation_id, limit)}
         except KeyError:
-            raise HTTPException(status_code=404, detail="Conversation not found.")
+            raise HTTPException(status_code=404, detail="Conversation not found.") from None
 
     @app.delete("/api/conversations/{conversation_id}")
     async def delete_conversation(conversation_id: str) -> dict[str, bool]:
@@ -874,4 +971,25 @@ def create_app(
     return app
 
 
-app = create_app()
+# `nova.main:app` is the ASGI entry point used by uvicorn, the Dockerfile, and
+# app.py on Hugging Face Spaces. It is built lazily (PEP 562) so that merely
+# importing this module — as the test suite and tooling do — never creates
+# storage directories or applies environment-dependent fail-closed checks.
+_default_app: FastAPI | None = None
+
+
+def _get_default_app() -> FastAPI:
+    global _default_app
+    if _default_app is None:
+        _default_app = create_app()
+    return _default_app
+
+
+def __getattr__(name: str) -> Any:
+    if name == "app":
+        return _get_default_app()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted([*globals(), "app"])

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from nova.engine import TaskEngine
 from nova.intelligence import IntelligenceOrchestrator, ModelManager
 from nova.model_providers import ModelCatalog
 from nova.provider import ProviderConfigurationError, ProviderError
@@ -50,8 +49,15 @@ async def test_frontier_fusion_runs_bounded_analyses_review_and_synthesis(enviro
     assert result["intelligence"]["usage_complete"] is True
     assert result["intelligence"]["mode_effective"] == "frontier_fusion"
     assert result["intelligence"]["cost_estimate_complete"] is False
-    assert len(result["intelligence"]["model_results"]) == 4
-    assert any(item["role"] == "conflict_review" for item in result["intelligence"]["model_results"])
+    # Every fusion role that actually ran must be reported: three independent
+    # analyses, the targeted disagreement review, and the integration synthesis.
+    model_results = result["intelligence"]["model_results"]
+    assert len(model_results) == 5
+    reported_roles = [item["role"] for item in model_results]
+    assert reported_roles.count("independent_analysis") == 3
+    assert "conflict_review" in reported_roles
+    assert "synthesis" in reported_roles
+    assert all(item["status"] == "ok" for item in model_results)
     assert "no majority vote" in result["intelligence"]["checks_performed"][2]
     assert len(provider.calls) == 5
     history = db.list_intelligence_runs()

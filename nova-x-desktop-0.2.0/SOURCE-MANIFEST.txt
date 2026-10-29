@@ -39,7 +39,6 @@ Contents:
   packaging/debian/nova-x.desktop
   packaging/debian/nova-x.svg
   pyproject.toml
-  pytest.ini
   requirements-dev.txt
   requirements.txt
   scripts/build_deb.sh
@@ -59,7 +58,16 @@ Contents:
   tests/test_intelligence.py
   tests/test_model_providers.py
   tests/test_provider.py
+  tests/test_regressions.py
   tests/test_tools.py
 
 Excluded: generated caches, local databases/workspaces, credentials, and built release binaries.
 Build instructions: README.md and docs/NATIVE_DESKTOP.md.
+
+Notes:
+  * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
+    the duplicate pytest.ini that used to shadow it has been removed.
+  * Lint configuration lives in pyproject.toml ([tool.ruff]).
+  * CI lives at the repository root: .github/workflows/ci.yml (outside this bundle).
+  * releases/*.deb is a build artifact produced by scripts/build_deb.sh and is not
+    part of the source bundle.

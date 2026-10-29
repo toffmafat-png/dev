@@ -6,17 +6,16 @@ workspace overwrite authorization is always path-scoped.
 """
 from __future__ import annotations
 
+import time
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from tempfile import TemporaryDirectory
-import time
 from typing import Any
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
 
 from nova.config import Settings
 from nova.db import Database
 from nova.tools.registry import ToolRegistry
-
 
 AUTONOMY_LEVELS: tuple[dict[str, str], ...] = (
     {
@@ -269,7 +268,7 @@ async def run_autonomy_benchmark(settings: Settings) -> dict[str, Any]:
         record("unknown-tools-are-blocked", unknown["action"] == "deny", unknown["rule"])
 
         goal = database.create_goal("Benchmark goal", "A user-configured test objective", 60, enabled=False)
-        future = datetime.now(timezone.utc) + timedelta(days=3)
+        future = datetime.now(UTC) + timedelta(days=3)
         no_dispatch = database.dispatch_due_goals(daily_limit=5, now=future)
         database.update_goal(goal["id"], enabled=True)
         dispatched = database.dispatch_due_goals(daily_limit=5, now=future)

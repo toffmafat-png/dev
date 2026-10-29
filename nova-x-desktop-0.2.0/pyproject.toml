@@ -16,7 +16,14 @@ dependencies = [
 [project.optional-dependencies]
 desktop = ["PySide6>=6.6", "keyring>=24"]
 server = ["fastapi>=0.115,<1.0", "uvicorn>=0.34,<1.0", "python-dotenv>=1,<2"]
-test = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2"]
+# Kept in sync with requirements-dev.txt so `pip install .[test]` and
+# `pip install -r requirements-dev.txt` resolve to the same toolchain.
+test = [
+  "pytest>=8,<10",
+  "pytest-asyncio>=0.24,<2",
+  "httpx2>=2.16,<3",
+]
+lint = ["ruff>=0.6"]
 
 [project.scripts]
 nova-x = "nova.desktop.cli:main"
@@ -24,6 +31,43 @@ nova-x = "nova.desktop.cli:main"
 [tool.setuptools.packages.find]
 include = ["nova*"]
 
+# Single source of truth for pytest configuration. A separate pytest.ini used to
+# duplicate this block and silently took precedence, so drift between the two was
+# invisible; pytest.ini has been removed.
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Pin the loop scope explicitly: pytest-asyncio warns and will change its default
+# in a future release, which would silently alter fixture sharing behavior.
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+filterwarnings = [
+  "error::DeprecationWarning:nova.*",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 140
+extend-exclude = ["releases", ".venv"]
+
+[tool.ruff.lint]
+# Correctness-first selection: pyflakes (F), pycodestyle errors (E), bugbear (B),
+# comprehensions (C4), return/unused-argument hygiene, and async pitfalls.
+select = ["E", "F", "W", "B", "C4", "RET", "SIM", "UP", "I", "ASYNC", "RUF"]
+ignore = [
+  "E501",    # line length is enforced by the formatter, not the linter
+  "RET504",  # explicit temporary variable before return aids debugging
+  "SIM105",  # contextlib.suppress is not always clearer than try/except/pass
+  "RUF001",  # documentation intentionally uses typographic punctuation
+  "RUF002",
+  "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Qt/native modules set NOVA_DESKTOP_MODE before importing nova.config on purpose.
+"nova/desktop/cli.py" = ["E402"]
+"nova/desktop/runtime.py" = ["E402"]
+# Test doubles accept unused parameters to match the interface they replace.
+"tests/*" = ["ARG", "B010", "RUF059", "ASYNC240"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["nova"]

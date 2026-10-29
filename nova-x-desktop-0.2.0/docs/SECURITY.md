@@ -58,4 +58,8 @@ Evaluation runs and optional 1–5 feedback are stored locally for operator comp
 
 This is an early single-user foundation, not a security-certified product. It lacks multi-user authorization, SSO/OAuth, persistent/distributed sessions, distributed rate limits, encrypted-at-rest SQLite, full data-retention UI for all local records, external security review, OS-level candidate code isolation, and provider-live security tests. Public deployments should remain private/restricted until those controls and owner configuration are reviewed.
 
-Access-token rotation requires restarting/reconfiguring the service, which invalidates in-memory sessions. Local HTTP is not permitted for external provider hosts. Reverse-proxy headers are not trusted for client identity; `X-Forwarded-Proto` is used only for Secure cookie handling as described in code.
+### Session lifecycle
+
+Sessions live in process memory only. `POST /api/auth/logout` clears the `HttpOnly` cookie **and** revokes the session server-side, so a cookie captured before logout stops working immediately rather than remaining valid until its TTL expires. Expired sessions are pruned periodically, and the number of live sessions is capped (`MAX_ACTIVE_SESSIONS`); when the cap is reached the session closest to expiry is evicted rather than rejecting a new sign-in. Restarting or reconfiguring the service invalidates all sessions, as does rotating `NOVA_ACCESS_TOKEN`. Because the store is in-memory, sessions are not shared across replicas — run one worker (`--workers 1`, the documented default) or move to a shared session store before scaling out.
+
+Local HTTP is not permitted for external provider hosts. Reverse-proxy headers are not trusted for client identity; `X-Forwarded-Proto` is used only for Secure cookie handling as described in code.

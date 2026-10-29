@@ -158,6 +158,7 @@ Free hosted compute may sleep, cold-start, throttle, or have ephemeral disk. A s
 | `NOVA_MAX_REQUEST_CHARS` | User prompt size | 12,000 |
 | `NOVA_MAX_TOOL_OUTPUT_CHARS` | Tool result size | 12,000 |
 | `NOVA_MAX_FILE_BYTES` | Text file read/write limit | 512 KiB |
+| `NOVA_MAX_CHAT_HISTORY_MESSAGES` | Prior chat turns sent as provider context | 20 (clamped 1–200); the full transcript stays in SQLite |
 | `NOVA_VERIFY_TASKS` | Evidence-review call when tool evidence exists | `true`; consumes provider budget |
 | `TAVILY_API_KEY` | Optional public web-search integration | Blank/disabled |
 | `NOVA_DATA_DIR`, `NOVA_WORKSPACE_DIR` | Local database/workspace roots | `./data`, `./workspace` |
@@ -165,12 +166,18 @@ Free hosted compute may sleep, cold-start, throttle, or have ephemeral disk. A s
 ## Tests
 
 ```bash
+pip install -r requirements-dev.txt
 pytest -q
+ruff check .
 node --check static/app.js
 python -m compileall -q nova tests app.py
 ```
 
-Automated tests use deterministic fake adapters/providers and do not call paid APIs. They exercise API/task flows, safe tools, provider normalization, catalog completeness, endpoint/secret-reference validation, request budgeting, fallback, fusion, maximum mode, price-ceiling behavior, evaluation scoring, and UI syntax. Native desktop tests additionally run real local commands in a temporary workspace, verify stdout/exit status/timeouts/cancellation, redaction, secret-path denial, fake Secret Service behavior, structured task-tool integration, and approval previews. They do **not** verify live account access, provider billing, service quotas, Qt interaction, polkit/keyring unlock, or deployment behavior on Kali.
+The same checks run in CI (`.github/workflows/ci.yml`) across Python 3.11–3.13, plus a job that installs the system graphics libraries so the native Qt window test actually executes instead of skipping, and a job that builds the `.deb` and asserts its control version matches `pyproject.toml`.
+
+Automated tests use deterministic fake adapters/providers and do not call paid APIs. They exercise API/task flows, safe tools, provider normalization, catalog completeness, endpoint/secret-reference validation, request budgeting, fallback, fusion, maximum mode, price-ceiling behavior, evaluation scoring, and UI syntax. `tests/test_regressions.py` pins previously fixed defects: server-side session revocation on logout, a bounded/pruned session store, tolerant task serialization, startup-free app construction, clean storage-failure responses, import purity, and per-role fusion reporting. Native desktop tests additionally run real local commands in a temporary workspace, verify stdout/exit status/timeouts/cancellation, redaction, secret-path denial, fake Secret Service behavior, structured task-tool integration, and approval previews. They do **not** verify live account access, provider billing, service quotas, Qt interaction, polkit/keyring unlock, or deployment behavior on Kali.
+
+`tests/test_desktop_ui.py` skips when PySide6 is absent **or** when it is installed but cannot load (for example a container missing `libGL`/`libEGL`); the skip is module-scoped so the rest of the suite still runs.
 
 ## Security, privacy, and data
 

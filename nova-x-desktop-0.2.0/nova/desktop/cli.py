@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
-import sys
-from typing import Sequence
-
 import os
+import sys
+from collections.abc import Sequence
+
 os.environ["NOVA_DESKTOP_MODE"] = "1"
 
 from nova import __version__

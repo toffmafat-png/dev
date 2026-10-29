@@ -2,21 +2,16 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import shlex
 import sys
-from datetime import datetime
 from typing import Any
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -46,7 +41,6 @@ from nova.desktop.runtime import DesktopRuntime
 from nova.desktop.secrets import SECRET_ENV_NAMES
 from nova.model_providers import PROVIDER_CATALOG
 from nova.tools.registry import ToolOutcome
-
 
 THEME = """
 QMainWindow, QWidget { background: #0a1020; color: #e5eaf3; font-family: Inter, 'Noto Sans', sans-serif; font-size: 10pt; }
@@ -151,7 +145,7 @@ class NovaWindow(QMainWindow):
         self._selected_profile_id = ""
         self._command_request: dict[str, Any] | None = None
         self._is_refreshing_tasks = False
-        self.setWindowTitle(f"NOVA X — Local Desktop Assistant")
+        self.setWindowTitle("NOVA X — Local Desktop Assistant")
         self.setMinimumSize(1050, 700)
         self.resize(1360, 880)
         self.setStyleSheet(THEME)

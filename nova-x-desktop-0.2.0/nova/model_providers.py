@@ -4,9 +4,9 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 import urllib.parse
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -144,8 +144,8 @@ class _HTTPAdapter:
             try:
                 target = parsedate_to_datetime(value)
                 if target.tzinfo is None:
-                    target = target.replace(tzinfo=timezone.utc)
-                delay = (target - datetime.now(timezone.utc)).total_seconds()
+                    target = target.replace(tzinfo=UTC)
+                delay = (target - datetime.now(UTC)).total_seconds()
             except (TypeError, ValueError, OverflowError):
                 return None
         return max(0.0, min(float(delay), 3600.0))

@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Type
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
@@ -34,7 +35,7 @@ class ToolDefinition:
     name: str
     description: str
     parameters: dict[str, Any]
-    input_model: Type[BaseModel]
+    input_model: type[BaseModel]
     handler: ToolHandler
     permission: str
     available: bool = True

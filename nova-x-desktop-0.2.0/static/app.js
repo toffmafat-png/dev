@@ -95,6 +95,18 @@
     if (node) node.textContent = value;
   }
 
+  // Progressive enhancement: index.html ships a static fallback for both of
+  // these, so a no-JS or pre-hydration render still looks intentional.
+  function renderTodayLabel() {
+    const node = $('#todayLabel');
+    if (!node) return;
+    const now = new Date();
+    if (Number.isNaN(now.getTime())) return;
+    node.textContent = now
+      .toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+      .toUpperCase();
+  }
+
   function switchView(name) {
     const allowed = ['command', 'tasks', 'goals', 'tools', 'models', 'settings'];
     if (!allowed.includes(name)) return;
@@ -772,6 +784,9 @@
     setText('#authModeText', health.authentication_required ? 'Access token + HttpOnly session cookie' : 'No access token configured');
     setText('#authModeBadge', health.authentication_required ? 'PROTECTED' : 'OPEN');
     setText('#footerCloud', `${health.provider_configured ? 'Cloud inference configured' : 'AI provider not configured'} · workspace sandbox`);
+    // Take the version from the server so the footer cannot drift from
+    // nova.__version__; keep the static HTML value if the API omits it.
+    if (health.version) setText('#footerVersion', health.version);
     document.body.classList.toggle('low-resource', Boolean(health.low_resource_mode));
     $('#lowResourceDot').style.background = health.low_resource_mode ? 'var(--teal)' : '#e9b960';
     $('#lowResourceDot').style.boxShadow = health.low_resource_mode ? '0 0 9px rgba(101,219,200,.4)' : 'none';
@@ -1026,6 +1041,7 @@
   }
 
   async function initialize() {
+    renderTodayLabel();
     const storedTheme = localStorage.getItem('novaTheme');
     if (storedTheme === 'light') document.body.classList.add('light');
     $('#themeButton').addEventListener('click', () => {

@@ -5,7 +5,7 @@ import json
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +18,7 @@ _TASK_COLUMNS = {
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
 def _dump(value: Any) -> str:
@@ -294,7 +294,7 @@ class Database:
 
     def create_goal(self, name: str, objective: str, interval_minutes: int, enabled: bool = False) -> dict[str, Any]:
         goal_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         now_text = now.isoformat(timespec="microseconds")
         next_run_at = (now + timedelta(minutes=interval_minutes)).isoformat(timespec="microseconds")
         with self._lock, self._connect() as conn:
@@ -337,7 +337,7 @@ class Database:
             row = conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
             if not row:
                 return None
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             now_text = now.isoformat(timespec="microseconds")
             interval = int(fields.get("interval_minutes", row["interval_minutes"]))
             enabled = bool(fields.get("enabled", row["enabled"]))
@@ -385,10 +385,10 @@ class Database:
         """Atomically create at most the daily cap of due goal tasks; never burst missed intervals."""
         if daily_limit <= 0:
             return []
-        current = now or datetime.now(timezone.utc)
+        current = now or datetime.now(UTC)
         if current.tzinfo is None:
-            current = current.replace(tzinfo=timezone.utc)
-        current = current.astimezone(timezone.utc)
+            current = current.replace(tzinfo=UTC)
+        current = current.astimezone(UTC)
         now_text = current.isoformat(timespec="microseconds")
         day_start = current.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(timespec="microseconds")
         created: list[dict[str, Any]] = []
@@ -411,8 +411,8 @@ class Database:
                 except ValueError:
                     scheduled_dt = current
                 if scheduled_dt.tzinfo is None:
-                    scheduled_dt = scheduled_dt.replace(tzinfo=timezone.utc)
-                scheduled_dt = scheduled_dt.astimezone(timezone.utc)
+                    scheduled_dt = scheduled_dt.replace(tzinfo=UTC)
+                scheduled_dt = scheduled_dt.astimezone(UTC)
                 next_dt = scheduled_dt
                 interval = int(goal["interval_minutes"])
                 while next_dt <= current:

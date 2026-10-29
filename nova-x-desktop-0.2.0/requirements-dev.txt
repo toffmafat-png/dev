@@ -1,4 +1,15 @@
 -r requirements.txt
+
+# Test runner and plugins. httpx2 is required by starlette.testclient on current
+# Starlette releases (it warns and will later fail when only httpx is present).
 pytest>=8,<10
 pytest-asyncio>=0.24,<2
 httpx2>=2.16,<3
+
+# Lint / static analysis — configured in pyproject.toml under [tool.ruff].
+ruff>=0.6
+
+# Native desktop extras, so the Qt window tests can run on a host that has the
+# system graphics libraries (libGL/libEGL) installed. They skip cleanly elsewhere.
+PySide6>=6.6
+keyring>=24
