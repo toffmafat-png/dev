@@ -154,6 +154,7 @@ class DesktopRuntime:
         self.platform = self.engine.platform
         self.platform.unified_os.model_manager = self.model_manager
         self.creation = self.platform.creation
+        self.system_access = self.platform.system_access
         self.async_service = AsyncService()
         self.closed = False
         self.database.recover_interrupted_tasks()
@@ -351,7 +352,12 @@ class DesktopRuntime:
         for command_id in list(self.runner.active_processes()):
             if await self.runner.stop(command_id):
                 stopped_commands.append(command_id)
-        return {"stopped_tasks": stopped_tasks, "stopped_commands": stopped_commands}
+        estop = self.system_access.startup_policy.trigger_emergency_stop("Desktop/CLI emergency stop invoked")
+        return {
+            "stopped_tasks": stopped_tasks,
+            "stopped_commands": stopped_commands,
+            "safe_recovery_mode": estop["safe_recovery_mode"],
+        }
 
     async def run_command(self, argv: list[str], cwd: str | None = None, timeout_seconds: int = 120, approved: bool = False):
         return await self.runner.run(argv, cwd=cwd, timeout_seconds=timeout_seconds, approved=approved, source="manual_ui")
@@ -478,6 +484,23 @@ class DesktopRuntime:
             "goals": self.database.list_goals(),
             "experiments": self.database.list_improvement_experiments(limit=20),
             "resources": self.platform.resources.assess().to_dict(),
+        }
+
+    def infrastructure_snapshot(self, hardware_query: str = "") -> dict[str, Any]:
+        """§149–§163 Live snapshot for the Hardware, Recording, Resilience & Servers UI."""
+        hw = self.system_access.hardware.search(hardware_query, refresh=True)
+        obs = self.system_access.monitor.collect_snapshot()
+        return {
+            "hardware": hw,
+            "privileged": self.system_access.privileged_client.status(),
+            "startup_policy": self.system_access.startup_policy.get_policy_with_disclosures(),
+            "recording_session": self.system_access.recording_studio.detect_session_capabilities(),
+            "recordings": self.system_access.recording_studio.search_history()[:15],
+            "observability": obs,
+            "alerts": self.system_access.monitor.evaluate_alerts(obs),
+            "servers": self.system_access.servers.list_servers(),
+            "nodes": self.database.list_remote_nodes(),
+            "infrastructure_knowledge": self.system_access.infra_knowledge.list_records()[:20],
         }
 
     def export_diagnostic_bundle(self) -> dict[str, Any]:

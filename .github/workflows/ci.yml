@@ -75,6 +75,11 @@ jobs:
             ${{ env.PROJECT_DIR }}/requirements.txt
             ${{ env.PROJECT_DIR }}/requirements-dev.txt
 
+      - name: Install OpenSSH server & client for §164 live remote verification
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends openssh-server openssh-client
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -88,6 +93,9 @@ jobs:
 
       - name: Unified OS Master Acceptance Suite (§26)
         run: python -m nova.acceptance
+
+      - name: System Access, Hardware & Continuous Autonomy Acceptance (§164)
+        run: python -m nova.system_access.acceptance
 
       - name: Pytest (full suite)
         run: python -m pytest -q

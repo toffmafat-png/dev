@@ -27,6 +27,7 @@ lint = ["ruff>=0.6"]
 
 [project.scripts]
 nova-x = "nova.desktop.cli:main"
+nova-x-privileged-helper = "nova.system_access.helper_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["nova*"]

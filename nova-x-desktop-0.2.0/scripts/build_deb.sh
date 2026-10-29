@@ -11,6 +11,7 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 PKG="$BUILD_DIR/package"
 install -d "$PKG/DEBIAN" "$PKG/usr/lib/nova-x" "$PKG/usr/bin" \
   "$PKG/usr/lib/systemd/user" \
+  "$PKG/usr/share/polkit-1/actions" \
   "$PKG/usr/share/applications" "$PKG/usr/share/icons/hicolor/scalable/apps" \
   "$PKG/usr/share/doc/nova-x-desktop"
 
@@ -45,12 +46,22 @@ from nova.desktop.cli import main
 raise SystemExit(main())
 EOF
 chmod 0755 "$PKG/usr/bin/nova-x"
+cat > "$PKG/usr/bin/nova-x-privileged-helper" <<'EOF'
+#!/usr/bin/python3
+import sys
+sys.path.insert(0, "/usr/lib/nova-x")
+from nova.system_access.helper_cli import main
+raise SystemExit(main())
+EOF
+chmod 0755 "$PKG/usr/bin/nova-x-privileged-helper"
+install -m 0644 "$ROOT/packaging/polkit/org.novax.pkexec.helper.policy" "$PKG/usr/share/polkit-1/actions/org.novax.pkexec.helper.policy"
 install -m 0644 "$ROOT/packaging/debian/nova-x.desktop" "$PKG/usr/share/applications/nova-x.desktop"
 install -m 0644 "$ROOT/packaging/debian/nova-x.svg" "$PKG/usr/share/icons/hicolor/scalable/apps/nova-x.svg"
 install -m 0644 "$ROOT/packaging/debian/nova-x-worker.service" "$PKG/usr/lib/systemd/user/nova-x-worker.service"
 install -m 0644 "$ROOT/packaging/debian/README.Debian" "$PKG/usr/share/doc/nova-x-desktop/README.Debian"
 install -m 0644 "$ROOT/docs/NATIVE_DESKTOP.md" "$PKG/usr/share/doc/nova-x-desktop/README.native"
 install -m 0644 "$ROOT/docs/UNIFIED_OS.md" "$PKG/usr/share/doc/nova-x-desktop/UNIFIED_OS.md"
+install -m 0644 "$ROOT/docs/SYSTEM_ACCESS.md" "$PKG/usr/share/doc/nova-x-desktop/SYSTEM_ACCESS.md"
 install -m 0644 "$ROOT/README.md" "$PKG/usr/share/doc/nova-x-desktop/README.upstream"
 
 install -d "$OUT_DIR"

@@ -543,6 +543,87 @@ def _unified_os_health(app_state: Any) -> dict[str, Any]:
     return base
 
 
+class StartupPolicyUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    updates: dict[str, bool] = Field(default_factory=dict)
+
+
+class DriverDiagnoseApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    device_id: str = Field(default="", max_length=120)
+    diagnostic_evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class RecordingStartApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(default="Screen Recording", max_length=200)
+    capture_mode: str = Field(default="full_screen", max_length=40)
+    fps: int = Field(default=10, ge=1, le=30)
+    resolution: str = Field(default="1280x720", max_length=32)
+    quality_preset: str = Field(default="low_overhead", max_length=32)
+    output_format: str = Field(default="avi", max_length=16)
+    system_audio: bool = False
+    microphone_audio: bool = False
+    explicit_mic_consent: bool = False
+    task_id: str = Field(default="", max_length=80)
+
+
+class InfraKnowledgeApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    category: str = Field(..., min_length=1, max_length=64)
+    key: str = Field(..., min_length=1, max_length=160)
+    title: str = Field(..., min_length=1, max_length=200)
+    value: dict[str, Any] = Field(default_factory=dict)
+    source: str = Field(default="operator_api", max_length=120)
+    ttl_seconds: int = Field(default=3600, ge=60, le=31_536_000)
+
+
+class ServerRegisterApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    alias: str = Field(..., min_length=1, max_length=64)
+    hostname: str = Field(..., min_length=1, max_length=253)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(..., min_length=1, max_length=64)
+    purpose_tag: str = Field(default="general", max_length=120)
+    auth_method: str = Field(default="ssh_key", max_length=32)
+    private_key_path: str = Field(default="", max_length=500)
+    host_key_line: str = Field(..., min_length=10, max_length=2000)
+    allowed_permissions: list[str] = Field(default_factory=lambda: ["inspect", "execute", "transfer"])
+    notes: str = Field(default="", max_length=300)
+
+
+class RemoteExecApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command: str = Field(..., min_length=1, max_length=2000)
+    dry_run: bool = False
+    operator_approved: bool = False
+    timeout_sec: int = Field(default=20, ge=2, le=120)
+
+
+def _system_access_health(app_state: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "sqlite_wal_ok": False,
+        "safe_recovery_mode": False,
+        "emergency_stop_active": False,
+        "registered_servers": 0,
+        "remote_nodes": 0,
+        "recording_active": False,
+        "degraded": True,
+        "detail": "/api/system/summary",
+    }
+    try:
+        platform_svc = getattr(app_state, "platform", None) or getattr(getattr(app_state, "engine", None), "platform", None)
+        sys_acc = getattr(platform_svc, "system_access", None) if platform_svc is not None else None
+        if sys_acc is None:
+            return base
+        h = sys_acc.health_summary()
+        base.update(h)
+        base["degraded"] = not bool(h.get("sqlite_wal_ok"))
+    except Exception:
+        base["degraded"] = True
+    return base
+
+
 def create_app(
     settings: Settings | None = None,
     provider: Any | None = None,
@@ -568,6 +649,7 @@ def create_app(
     # `Database.initialize()` is idempotent, so `lifespan` still re-affirms it.
     settings.ensure_dirs()
     database.initialize()
+    engine.platform.system_access.last_startup_recovery = engine.platform.system_access.run_startup_recovery()
     sessions = SessionStore()
     request_windows: dict[tuple[str, str], deque[float]] = defaultdict(deque)
     window_last_seen: dict[tuple[str, str], float] = {}
@@ -722,6 +804,7 @@ def create_app(
             "platform": _platform_health(app.state),
             "creation": _creation_health(app.state),
             "unified_os": _unified_os_health(app.state),
+            "system_access": _system_access_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -1770,6 +1853,146 @@ def create_app(
             domain_override=payload.domain_override,
             package=payload.package,
         )
+
+    # --- §149–§164 System Access, Hardware Intelligence, Resilience, Recording & Remote Servers ---
+
+    @app.get("/api/system/summary")
+    async def system_access_summary() -> dict[str, Any]:
+        return engine.platform.system_access.health_summary()
+
+    @app.get("/api/system/hardware")
+    async def system_hardware_explore(query: str = "", device_type: str = "", status_category: str = "", refresh: bool = True) -> dict[str, Any]:
+        return engine.platform.system_access.hardware.search(
+            query,
+            device_type=device_type,
+            status_category=status_category,
+            refresh=refresh,
+        )
+
+    @app.post("/api/system/drivers/diagnose")
+    async def system_drivers_diagnose(payload: DriverDiagnoseApiRequest) -> dict[str, Any]:
+        return engine.platform.system_access.drivers.diagnose(
+            device_id=payload.device_id,
+            diagnostic_evidence=payload.diagnostic_evidence or None,
+        )
+
+    @app.get("/api/system/privileged/status")
+    async def system_privileged_status() -> dict[str, Any]:
+        return engine.platform.system_access.privileged_client.status()
+
+    @app.get("/api/system/startup-policy")
+    async def system_startup_policy_get() -> dict[str, Any]:
+        return engine.platform.system_access.startup_policy.get_policy_with_disclosures()
+
+    @app.post("/api/system/startup-policy")
+    async def system_startup_policy_update(payload: StartupPolicyUpdateRequest) -> dict[str, Any]:
+        return engine.platform.system_access.startup_policy.update_policy(payload.updates)
+
+    @app.post("/api/system/recovery/run")
+    async def system_recovery_run() -> dict[str, Any]:
+        return engine.platform.system_access.run_startup_recovery()
+
+    @app.get("/api/system/recordings")
+    async def system_recordings_list(query: str = "") -> dict[str, Any]:
+        studio = engine.platform.system_access.recording_studio
+        return {
+            "session": studio.detect_session_capabilities(),
+            "recordings": studio.search_history(query=query),
+        }
+
+    @app.post("/api/system/recordings/start")
+    async def system_recordings_start(payload: RecordingStartApiRequest) -> dict[str, Any]:
+        try:
+            return engine.platform.system_access.recording_studio.start_recording(
+                title=payload.title,
+                capture_mode=payload.capture_mode,
+                fps=payload.fps,
+                resolution=payload.resolution,
+                quality_preset=payload.quality_preset,
+                output_format=payload.output_format,
+                system_audio=payload.system_audio,
+                microphone_audio=payload.microphone_audio,
+                explicit_mic_consent=payload.explicit_mic_consent,
+                user_initiated=True,
+                task_id=payload.task_id,
+            )
+        except (PermissionError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/system/recordings/{recording_id}/stop")
+    async def system_recordings_stop(recording_id: str) -> dict[str, Any]:
+        try:
+            return engine.platform.system_access.recording_studio.stop_recording(recording_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/system/recordings/{recording_id}/analyze")
+    async def system_recordings_analyze(recording_id: str) -> dict[str, Any]:
+        try:
+            return engine.platform.system_access.recording_studio.analyze_recording(recording_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/system/observability")
+    async def system_observability() -> dict[str, Any]:
+        mon = engine.platform.system_access.monitor
+        snap = mon.collect_snapshot()
+        return {"snapshot": snap, "alerts": mon.evaluate_alerts(snap)}
+
+    @app.get("/api/system/infrastructure-knowledge")
+    async def system_infra_knowledge_list(category: str = "", query: str = "") -> dict[str, Any]:
+        recs = engine.platform.system_access.infra_knowledge.list_records(category=category, query=query)
+        return {"count": len(recs), "records": recs}
+
+    @app.post("/api/system/infrastructure-knowledge")
+    async def system_infra_knowledge_upsert(payload: InfraKnowledgeApiRequest) -> dict[str, Any]:
+        try:
+            return engine.platform.system_access.infra_knowledge.record(
+                category=payload.category,
+                key=payload.key,
+                title=payload.title,
+                value=payload.value,
+                source=payload.source,
+                ttl_seconds=payload.ttl_seconds,
+            )
+        except (PermissionError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/system/servers")
+    async def system_servers_list() -> dict[str, Any]:
+        return {"servers": engine.platform.system_access.servers.list_servers()}
+
+    @app.post("/api/system/servers")
+    async def system_servers_register(payload: ServerRegisterApiRequest) -> dict[str, Any]:
+        try:
+            return engine.platform.system_access.servers.register_server(
+                alias=payload.alias,
+                hostname=payload.hostname,
+                port=payload.port,
+                username=payload.username,
+                purpose_tag=payload.purpose_tag,
+                auth_method=payload.auth_method,
+                private_key_path=payload.private_key_path,
+                host_key_line=payload.host_key_line,
+                allowed_permissions=payload.allowed_permissions,
+                notes=payload.notes,
+            )
+        except (FileNotFoundError, PermissionError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/system/servers/{alias}/exec")
+    async def system_servers_exec(alias: str, payload: RemoteExecApiRequest) -> dict[str, Any]:
+        return engine.platform.system_access.servers.execute_remote_command(
+            alias,
+            payload.command,
+            dry_run=payload.dry_run,
+            operator_approved=payload.operator_approved,
+            timeout_sec=payload.timeout_sec,
+        )
+
+    @app.get("/api/system/nodes")
+    async def system_nodes_list() -> dict[str, Any]:
+        return {"nodes": database.list_remote_nodes()}
 
     return app
 

@@ -461,6 +461,203 @@ class Database:
                     started_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS driver_repairs (
+                    id TEXT PRIMARY KEY,
+                    device_id TEXT NOT NULL,
+                    device_class TEXT NOT NULL,
+                    issue_summary TEXT NOT NULL,
+                    proposed_action TEXT NOT NULL,
+                    risk_level TEXT NOT NULL,
+                    recovery_path TEXT NOT NULL DEFAULT '',
+                    applied INTEGER NOT NULL DEFAULT 0,
+                    verified_functional INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_driver_repairs_created ON driver_repairs(created_at DESC);
+                CREATE TABLE IF NOT EXISTS privileged_helper_policies (
+                    id TEXT PRIMARY KEY,
+                    operation TEXT NOT NULL,
+                    scope_pattern TEXT NOT NULL DEFAULT '*',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    allow_without_prompt INTEGER NOT NULL DEFAULT 0,
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(operation, scope_pattern)
+                );
+                CREATE TABLE IF NOT EXISTS privileged_helper_audit (
+                    id TEXT PRIMARY KEY,
+                    operation TEXT NOT NULL,
+                    target TEXT NOT NULL DEFAULT '',
+                    requester TEXT NOT NULL DEFAULT 'user_ui',
+                    authorized INTEGER NOT NULL DEFAULT 0,
+                    auth_mechanism TEXT NOT NULL DEFAULT 'denied',
+                    dry_run INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_priv_audit_created ON privileged_helper_audit(created_at DESC);
+                CREATE TABLE IF NOT EXISTS task_recovery_journal (
+                    task_id TEXT PRIMARY KEY,
+                    objective TEXT NOT NULL,
+                    permissions_json TEXT NOT NULL DEFAULT '{}',
+                    execution_plan_json TEXT NOT NULL DEFAULT '[]',
+                    current_step INTEGER NOT NULL DEFAULT 0,
+                    completed_steps_json TEXT NOT NULL DEFAULT '[]',
+                    actual_results_json TEXT NOT NULL DEFAULT '[]',
+                    pending_steps_json TEXT NOT NULL DEFAULT '[]',
+                    dependencies_json TEXT NOT NULL DEFAULT '[]',
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    last_checkpoint_json TEXT NOT NULL DEFAULT '{}',
+                    required_resources_json TEXT NOT NULL DEFAULT '{}',
+                    working_directory TEXT NOT NULL DEFAULT '',
+                    expected_outputs_json TEXT NOT NULL DEFAULT '[]',
+                    verification_status TEXT NOT NULL DEFAULT 'pending',
+                    cancellation_state TEXT NOT NULL DEFAULT 'none',
+                    last_known_blocker TEXT NOT NULL DEFAULT '',
+                    active_before_shutdown INTEGER NOT NULL DEFAULT 0,
+                    detached_background INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_recovery_active ON task_recovery_journal(active_before_shutdown, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS operation_idempotency (
+                    idempotency_key TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    step_index INTEGER NOT NULL DEFAULT 0,
+                    operation_kind TEXT NOT NULL,
+                    repeatable INTEGER NOT NULL DEFAULT 0,
+                    state TEXT NOT NULL DEFAULT 'started',
+                    expected_effect_json TEXT NOT NULL DEFAULT '{}',
+                    observed_result_json TEXT NOT NULL DEFAULT '{}',
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS screen_recordings (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    capture_mode TEXT NOT NULL,
+                    session_type TEXT NOT NULL,
+                    backend TEXT NOT NULL,
+                    output_format TEXT NOT NULL DEFAULT 'avi',
+                    fps INTEGER NOT NULL DEFAULT 5,
+                    resolution TEXT NOT NULL DEFAULT '640x360',
+                    quality TEXT NOT NULL DEFAULT 'balanced',
+                    max_size_mb INTEGER NOT NULL DEFAULT 250,
+                    audio_source TEXT NOT NULL DEFAULT 'none',
+                    mic_enabled INTEGER NOT NULL DEFAULT 0,
+                    task_id TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    interruption_reason TEXT NOT NULL DEFAULT '',
+                    output_path TEXT NOT NULL DEFAULT '',
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    duration_seconds REAL NOT NULL DEFAULT 0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_recordings_started ON screen_recordings(started_at DESC);
+                CREATE TABLE IF NOT EXISTS recording_segments (
+                    id TEXT PRIMARY KEY,
+                    recording_id TEXT NOT NULL REFERENCES screen_recordings(id) ON DELETE CASCADE,
+                    segment_index INTEGER NOT NULL,
+                    file_path TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    frame_count INTEGER NOT NULL DEFAULT 0,
+                    duration_seconds REAL NOT NULL DEFAULT 0,
+                    finalized INTEGER NOT NULL DEFAULT 0,
+                    sha256 TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(recording_id, segment_index)
+                );
+                CREATE TABLE IF NOT EXISTS observability_alerts (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    metric TEXT NOT NULL,
+                    comparator TEXT NOT NULL,
+                    threshold REAL NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_triggered_at TEXT NOT NULL DEFAULT '',
+                    action_workflow TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS registered_servers (
+                    id TEXT PRIMARY KEY,
+                    alias TEXT NOT NULL UNIQUE,
+                    hostname TEXT NOT NULL,
+                    port INTEGER NOT NULL DEFAULT 22,
+                    username TEXT NOT NULL,
+                    purpose TEXT NOT NULL DEFAULT '',
+                    auth_method TEXT NOT NULL DEFAULT 'ssh_key',
+                    key_path TEXT NOT NULL DEFAULT '',
+                    known_hosts_path TEXT NOT NULL DEFAULT '',
+                    host_key_fingerprint TEXT NOT NULL DEFAULT '',
+                    host_key_status TEXT NOT NULL DEFAULT 'unverified',
+                    granted_permissions_json TEXT NOT NULL DEFAULT '[]',
+                    authorized_operations_json TEXT NOT NULL DEFAULT '[]',
+                    connection_health TEXT NOT NULL DEFAULT 'unknown',
+                    last_connected_at TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS remote_task_runs (
+                    id TEXT PRIMARY KEY,
+                    server_id TEXT NOT NULL REFERENCES registered_servers(id) ON DELETE CASCADE,
+                    operation TEXT NOT NULL,
+                    command_summary TEXT NOT NULL,
+                    dry_run INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    exit_code INTEGER,
+                    output_excerpt TEXT NOT NULL DEFAULT '',
+                    error_excerpt TEXT NOT NULL DEFAULT '',
+                    duration_ms REAL NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_remote_runs_server ON remote_task_runs(server_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS infrastructure_knowledge (
+                    id TEXT PRIMARY KEY,
+                    category TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    target_ref TEXT NOT NULL DEFAULT '',
+                    ttl_seconds INTEGER NOT NULL DEFAULT 3600,
+                    observed_at TEXT NOT NULL,
+                    revalidated_at TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_infra_knowledge_cat ON infrastructure_knowledge(category, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS remote_nodes (
+                    node_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    endpoint TEXT NOT NULL DEFAULT '',
+                    pairing_key_id TEXT NOT NULL DEFAULT '',
+                    capabilities_json TEXT NOT NULL DEFAULT '[]',
+                    allowed_operations_json TEXT NOT NULL DEFAULT '[]',
+                    resources_json TEXT NOT NULL DEFAULT '{}',
+                    software_version TEXT NOT NULL DEFAULT '0.2.0',
+                    connection_state TEXT NOT NULL DEFAULT 'paired_offline',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_seen_at TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS startup_recovery_policy (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    policy_json TEXT NOT NULL DEFAULT '{}',
+                    safe_recovery_mode INTEGER NOT NULL DEFAULT 0,
+                    last_unclean_shutdown_reason TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -2124,3 +2321,823 @@ class Database:
         with self._lock, self._connect() as conn:
             rows = conn.execute("SELECT * FROM worker_heartbeats ORDER BY updated_at DESC").fetchall()
         return [dict(r) for r in rows]
+
+    # ---------------- §149–§163 System Access, Resilience, Recording & Remote CRUD
+
+    def save_driver_repair(self, record: dict[str, Any]) -> dict[str, Any]:
+        rep_id = str(record.get("id") or f"drv-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        row = {
+            "id": rep_id,
+            "device_id": str(record.get("device_id") or "")[:160],
+            "device_class": str(record.get("device_class") or "other")[:64],
+            "issue_summary": str(record.get("issue_summary") or "")[:500],
+            "proposed_action": str(record.get("proposed_action") or "")[:500],
+            "risk_level": str(record.get("risk_level") or "low")[:32],
+            "recovery_path": str(record.get("recovery_path") or "")[:500],
+            "applied": int(bool(record.get("applied", False))),
+            "verified_functional": int(bool(record.get("verified_functional", False))),
+            "status": str(record.get("status") or "proposed")[:48],
+            "evidence_json": _dump(record.get("evidence") or {}),
+            "created_at": str(record.get("created_at") or now),
+            "updated_at": now,
+        }
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO driver_repairs (
+                    id, device_id, device_class, issue_summary, proposed_action, risk_level,
+                    recovery_path, applied, verified_functional, status, evidence_json, created_at, updated_at
+                ) VALUES (
+                    :id, :device_id, :device_class, :issue_summary, :proposed_action, :risk_level,
+                    :recovery_path, :applied, :verified_functional, :status, :evidence_json, :created_at, :updated_at
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    applied=excluded.applied,
+                    verified_functional=excluded.verified_functional,
+                    status=excluded.status,
+                    evidence_json=excluded.evidence_json,
+                    updated_at=excluded.updated_at
+                """,
+                row,
+            )
+        return self.get_driver_repair(rep_id) or row
+
+    def get_driver_repair(self, repair_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM driver_repairs WHERE id = ?", (repair_id,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["applied"] = bool(d["applied"])
+        d["verified_functional"] = bool(d["verified_functional"])
+        d["evidence"] = json.loads(d.pop("evidence_json") or "{}")
+        return d
+
+    def list_driver_repairs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM driver_repairs ORDER BY created_at DESC LIMIT ?", (max(1, min(int(limit), 200)),)).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            d["applied"] = bool(d["applied"])
+            d["verified_functional"] = bool(d["verified_functional"])
+            d["evidence"] = json.loads(d.pop("evidence_json") or "{}")
+            out.append(d)
+        return out
+
+    def upsert_privileged_policy(
+        self,
+        operation: str,
+        scope_pattern: str = "*",
+        *,
+        enabled: bool = True,
+        allow_without_prompt: bool = False,
+        notes: str = "",
+    ) -> dict[str, Any]:
+        pol_id = f"ppol-{uuid.uuid4().hex[:12]}"
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO privileged_helper_policies (
+                    id, operation, scope_pattern, enabled, allow_without_prompt, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(operation, scope_pattern) DO UPDATE SET
+                    enabled=excluded.enabled,
+                    allow_without_prompt=excluded.allow_without_prompt,
+                    notes=excluded.notes,
+                    updated_at=excluded.updated_at
+                """,
+                (pol_id, operation[:80], scope_pattern[:160], int(bool(enabled)), int(bool(allow_without_prompt)), notes[:300], now, now),
+            )
+            row = conn.execute(
+                "SELECT * FROM privileged_helper_policies WHERE operation = ? AND scope_pattern = ?",
+                (operation[:80], scope_pattern[:160]),
+            ).fetchone()
+        d = dict(row) if row else {}
+        if d:
+            d["enabled"] = bool(d["enabled"])
+            d["allow_without_prompt"] = bool(d["allow_without_prompt"])
+        return d
+
+    def list_privileged_policies(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM privileged_helper_policies ORDER BY operation, scope_pattern").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["enabled"] = bool(d["enabled"])
+            d["allow_without_prompt"] = bool(d["allow_without_prompt"])
+            out.append(d)
+        return out
+
+    def add_privileged_audit(self, entry: dict[str, Any]) -> dict[str, Any]:
+        aud_id = str(entry.get("id") or f"paud-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        row = (
+            aud_id,
+            str(entry.get("operation") or "")[:80],
+            str(entry.get("target") or "")[:200],
+            str(entry.get("requester") or "user_ui")[:64],
+            int(bool(entry.get("authorized", False))),
+            str(entry.get("auth_mechanism") or "denied")[:48],
+            int(bool(entry.get("dry_run", False))),
+            str(entry.get("status") or "rejected")[:40],
+            str(entry.get("detail") or "")[:500],
+            now,
+        )
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO privileged_helper_audit (
+                    id, operation, target, requester, authorized, auth_mechanism, dry_run, status, detail, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                row,
+            )
+            saved = conn.execute("SELECT * FROM privileged_helper_audit WHERE id = ?", (aud_id,)).fetchone()
+        d = dict(saved) if saved else {}
+        if d:
+            d["authorized"] = bool(d["authorized"])
+            d["dry_run"] = bool(d["dry_run"])
+        return d
+
+    def list_privileged_audit(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM privileged_helper_audit ORDER BY created_at DESC LIMIT ?", (max(1, min(int(limit), 500)),)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["authorized"] = bool(d["authorized"])
+            d["dry_run"] = bool(d["dry_run"])
+            out.append(d)
+        return out
+
+    def upsert_task_journal(self, entry: dict[str, Any]) -> dict[str, Any]:
+        tid = str(entry["task_id"])[:80]
+        now = utc_now()
+        row = {
+            "task_id": tid,
+            "objective": str(entry.get("objective") or "")[:4000],
+            "permissions_json": _dump(entry.get("permissions") or {}),
+            "execution_plan_json": _dump(entry.get("execution_plan") or []),
+            "current_step": int(entry.get("current_step", 0)),
+            "completed_steps_json": _dump(entry.get("completed_steps") or []),
+            "actual_results_json": _dump(entry.get("actual_results") or []),
+            "pending_steps_json": _dump(entry.get("pending_steps") or []),
+            "dependencies_json": _dump(entry.get("dependencies") or []),
+            "retry_count": int(entry.get("retry_count", 0)),
+            "last_checkpoint_json": _dump(entry.get("last_checkpoint") or {}),
+            "required_resources_json": _dump(entry.get("required_resources") or {}),
+            "working_directory": str(entry.get("working_directory") or "")[:500],
+            "expected_outputs_json": _dump(entry.get("expected_outputs") or []),
+            "verification_status": str(entry.get("verification_status") or "pending")[:48],
+            "cancellation_state": str(entry.get("cancellation_state") or "none")[:48],
+            "last_known_blocker": str(entry.get("last_known_blocker") or "")[:500],
+            "active_before_shutdown": int(bool(entry.get("active_before_shutdown", False))),
+            "detached_background": int(bool(entry.get("detached_background", False))),
+            "created_at": str(entry.get("created_at") or now),
+            "updated_at": now,
+        }
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO task_recovery_journal (
+                    task_id, objective, permissions_json, execution_plan_json, current_step,
+                    completed_steps_json, actual_results_json, pending_steps_json, dependencies_json,
+                    retry_count, last_checkpoint_json, required_resources_json, working_directory,
+                    expected_outputs_json, verification_status, cancellation_state, last_known_blocker,
+                    active_before_shutdown, detached_background, created_at, updated_at
+                ) VALUES (
+                    :task_id, :objective, :permissions_json, :execution_plan_json, :current_step,
+                    :completed_steps_json, :actual_results_json, :pending_steps_json, :dependencies_json,
+                    :retry_count, :last_checkpoint_json, :required_resources_json, :working_directory,
+                    :expected_outputs_json, :verification_status, :cancellation_state, :last_known_blocker,
+                    :active_before_shutdown, :detached_background, :created_at, :updated_at
+                )
+                ON CONFLICT(task_id) DO UPDATE SET
+                    objective=excluded.objective,
+                    permissions_json=excluded.permissions_json,
+                    execution_plan_json=excluded.execution_plan_json,
+                    current_step=excluded.current_step,
+                    completed_steps_json=excluded.completed_steps_json,
+                    actual_results_json=excluded.actual_results_json,
+                    pending_steps_json=excluded.pending_steps_json,
+                    dependencies_json=excluded.dependencies_json,
+                    retry_count=excluded.retry_count,
+                    last_checkpoint_json=excluded.last_checkpoint_json,
+                    required_resources_json=excluded.required_resources_json,
+                    working_directory=excluded.working_directory,
+                    expected_outputs_json=excluded.expected_outputs_json,
+                    verification_status=excluded.verification_status,
+                    cancellation_state=excluded.cancellation_state,
+                    last_known_blocker=excluded.last_known_blocker,
+                    active_before_shutdown=excluded.active_before_shutdown,
+                    detached_background=excluded.detached_background,
+                    updated_at=excluded.updated_at
+                """,
+                row,
+            )
+        return self.get_task_journal(tid) or {}
+
+    @staticmethod
+    def _unpack_journal_row(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["permissions"] = json.loads(d.pop("permissions_json") or "{}")
+        d["execution_plan"] = json.loads(d.pop("execution_plan_json") or "[]")
+        d["completed_steps"] = json.loads(d.pop("completed_steps_json") or "[]")
+        d["actual_results"] = json.loads(d.pop("actual_results_json") or "[]")
+        d["pending_steps"] = json.loads(d.pop("pending_steps_json") or "[]")
+        d["dependencies"] = json.loads(d.pop("dependencies_json") or "[]")
+        d["last_checkpoint"] = json.loads(d.pop("last_checkpoint_json") or "{}")
+        d["required_resources"] = json.loads(d.pop("required_resources_json") or "{}")
+        d["expected_outputs"] = json.loads(d.pop("expected_outputs_json") or "[]")
+        d["active_before_shutdown"] = bool(d["active_before_shutdown"])
+        d["detached_background"] = bool(d["detached_background"])
+        return d
+
+    def get_task_journal(self, task_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM task_recovery_journal WHERE task_id = ?", (task_id,)).fetchone()
+        return self._unpack_journal_row(r) if r else None
+
+    def list_task_journals(self, *, active_only: bool = False, limit: int = 100) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM task_recovery_journal"
+        if active_only:
+            sql += " WHERE active_before_shutdown = 1"
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, (max(1, min(int(limit), 500)),)).fetchall()
+        return [self._unpack_journal_row(r) for r in rows]
+
+    def upsert_operation_idempotency(self, record: dict[str, Any]) -> dict[str, Any]:
+        ikey = str(record["idempotency_key"])[:160]
+        now = utc_now()
+        row = {
+            "idempotency_key": ikey,
+            "task_id": str(record.get("task_id") or "")[:80],
+            "step_index": int(record.get("step_index", 0)),
+            "operation_kind": str(record.get("operation_kind") or "generic")[:64],
+            "repeatable": int(bool(record.get("repeatable", False))),
+            "state": str(record.get("state") or "started")[:32],
+            "expected_effect_json": _dump(record.get("expected_effect") or {}),
+            "observed_result_json": _dump(record.get("observed_result") or {}),
+            "started_at": str(record.get("started_at") or now),
+            "completed_at": str(record.get("completed_at") or ""),
+        }
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO operation_idempotency (
+                    idempotency_key, task_id, step_index, operation_kind, repeatable,
+                    state, expected_effect_json, observed_result_json, started_at, completed_at
+                ) VALUES (
+                    :idempotency_key, :task_id, :step_index, :operation_kind, :repeatable,
+                    :state, :expected_effect_json, :observed_result_json, :started_at, :completed_at
+                )
+                ON CONFLICT(idempotency_key) DO UPDATE SET
+                    state=excluded.state,
+                    observed_result_json=excluded.observed_result_json,
+                    completed_at=excluded.completed_at
+                """,
+                row,
+            )
+        return self.get_operation_idempotency(ikey) or {}
+
+    def get_operation_idempotency(self, idempotency_key: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM operation_idempotency WHERE idempotency_key = ?", (idempotency_key,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["repeatable"] = bool(d["repeatable"])
+        d["expected_effect"] = json.loads(d.pop("expected_effect_json") or "{}")
+        d["observed_result"] = json.loads(d.pop("observed_result_json") or "{}")
+        return d
+
+    def list_task_idempotency_records(self, task_id: str) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM operation_idempotency WHERE task_id = ? ORDER BY step_index ASC",
+                (task_id,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["repeatable"] = bool(d["repeatable"])
+            d["expected_effect"] = json.loads(d.pop("expected_effect_json") or "{}")
+            d["observed_result"] = json.loads(d.pop("observed_result_json") or "{}")
+            out.append(d)
+        return out
+
+    def save_screen_recording(self, record: dict[str, Any]) -> dict[str, Any]:
+        rec_id = str(record.get("id") or f"rec-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        row = {
+            "id": rec_id,
+            "title": str(record.get("title") or "Screen Session")[:200],
+            "capture_mode": str(record.get("capture_mode") or "full_display")[:40],
+            "session_type": str(record.get("session_type") or "headless")[:32],
+            "backend": str(record.get("backend") or "procedural_frames")[:64],
+            "output_format": str(record.get("output_format") or "avi")[:16],
+            "fps": max(1, min(int(record.get("fps", 5)), 60)),
+            "resolution": str(record.get("resolution") or "640x360")[:32],
+            "quality": str(record.get("quality") or "balanced")[:24],
+            "max_size_mb": max(1, int(record.get("max_size_mb", 250))),
+            "audio_source": str(record.get("audio_source") or "none")[:64],
+            "mic_enabled": int(bool(record.get("mic_enabled", False))),
+            "task_id": str(record.get("task_id") or "")[:80],
+            "status": str(record.get("status") or "recording")[:32],
+            "interruption_reason": str(record.get("interruption_reason") or "")[:300],
+            "output_path": str(record.get("output_path") or "")[:500],
+            "size_bytes": int(record.get("size_bytes", 0)),
+            "duration_seconds": float(record.get("duration_seconds", 0.0)),
+            "metadata_json": _dump(record.get("metadata") or {}),
+            "started_at": str(record.get("started_at") or now),
+            "ended_at": str(record.get("ended_at") or ""),
+            "updated_at": now,
+        }
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO screen_recordings (
+                    id, title, capture_mode, session_type, backend, output_format, fps,
+                    resolution, quality, max_size_mb, audio_source, mic_enabled, task_id,
+                    status, interruption_reason, output_path, size_bytes, duration_seconds,
+                    metadata_json, started_at, ended_at, updated_at
+                ) VALUES (
+                    :id, :title, :capture_mode, :session_type, :backend, :output_format, :fps,
+                    :resolution, :quality, :max_size_mb, :audio_source, :mic_enabled, :task_id,
+                    :status, :interruption_reason, :output_path, :size_bytes, :duration_seconds,
+                    :metadata_json, :started_at, :ended_at, :updated_at
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    status=excluded.status,
+                    interruption_reason=excluded.interruption_reason,
+                    output_path=excluded.output_path,
+                    size_bytes=excluded.size_bytes,
+                    duration_seconds=excluded.duration_seconds,
+                    metadata_json=excluded.metadata_json,
+                    ended_at=excluded.ended_at,
+                    updated_at=excluded.updated_at
+                """,
+                row,
+            )
+        return self.get_screen_recording(rec_id) or {}
+
+    def get_screen_recording(self, rec_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM screen_recordings WHERE id = ?", (rec_id,)).fetchone()
+            segs = conn.execute(
+                "SELECT * FROM recording_segments WHERE recording_id = ? ORDER BY segment_index ASC",
+                (rec_id,),
+            ).fetchall()
+        if r is None:
+            return None
+        d = dict(r)
+        d["mic_enabled"] = bool(d["mic_enabled"])
+        d["metadata"] = json.loads(d.pop("metadata_json") or "{}")
+        d["segments"] = [{**dict(s), "finalized": bool(s["finalized"])} for s in segs]
+        return d
+
+    def list_screen_recordings(self, *, query: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        sql = "SELECT id FROM screen_recordings"
+        params: list[Any] = []
+        if query:
+            sql += " WHERE LOWER(title) LIKE ? OR LOWER(task_id) LIKE ? OR LOWER(interruption_reason) LIKE ?"
+            pat = f"%{query.lower()}%"
+            params.extend([pat, pat, pat])
+        sql += " ORDER BY started_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self._lock, self._connect() as conn:
+            ids = [r["id"] for r in conn.execute(sql, params).fetchall()]
+        return [item for rid in ids if (item := self.get_screen_recording(rid)) is not None]
+
+    def save_recording_segment(self, seg: dict[str, Any]) -> dict[str, Any]:
+        seg_id = str(seg.get("id") or f"seg-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO recording_segments (
+                    id, recording_id, segment_index, file_path, size_bytes,
+                    frame_count, duration_seconds, finalized, sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(recording_id, segment_index) DO UPDATE SET
+                    file_path=excluded.file_path,
+                    size_bytes=excluded.size_bytes,
+                    frame_count=excluded.frame_count,
+                    duration_seconds=excluded.duration_seconds,
+                    finalized=excluded.finalized,
+                    sha256=excluded.sha256
+                """,
+                (
+                    seg_id,
+                    str(seg["recording_id"]),
+                    int(seg["segment_index"]),
+                    str(seg["file_path"])[:500],
+                    int(seg.get("size_bytes", 0)),
+                    int(seg.get("frame_count", 0)),
+                    float(seg.get("duration_seconds", 0.0)),
+                    int(bool(seg.get("finalized", False))),
+                    str(seg.get("sha256") or "")[:64],
+                    now,
+                ),
+            )
+            r = conn.execute(
+                "SELECT * FROM recording_segments WHERE recording_id = ? AND segment_index = ?",
+                (str(seg["recording_id"]), int(seg["segment_index"])),
+            ).fetchone()
+        return {**dict(r), "finalized": bool(r["finalized"])} if r else {}
+
+    def save_observability_alert(self, alert: dict[str, Any]) -> dict[str, Any]:
+        aid = str(alert.get("id") or f"alrt-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO observability_alerts (
+                    id, name, metric, comparator, threshold, enabled, last_triggered_at, action_workflow, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,
+                    metric=excluded.metric,
+                    comparator=excluded.comparator,
+                    threshold=excluded.threshold,
+                    enabled=excluded.enabled,
+                    last_triggered_at=excluded.last_triggered_at,
+                    action_workflow=excluded.action_workflow,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    aid,
+                    str(alert["name"])[:120],
+                    str(alert["metric"])[:64],
+                    str(alert.get("comparator") or ">=")[:8],
+                    float(alert["threshold"]),
+                    int(bool(alert.get("enabled", True))),
+                    str(alert.get("last_triggered_at") or ""),
+                    str(alert.get("action_workflow") or "")[:120],
+                    now,
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM observability_alerts WHERE id = ?", (aid,)).fetchone()
+        return {**dict(r), "enabled": bool(r["enabled"])} if r else {}
+
+    def list_observability_alerts(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM observability_alerts ORDER BY created_at DESC").fetchall()
+        return [{**dict(r), "enabled": bool(r["enabled"])} for r in rows]
+
+    def save_registered_server(self, srv: dict[str, Any]) -> dict[str, Any]:
+        sid = str(srv.get("id") or f"srv-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        row = {
+            "id": sid,
+            "alias": str(srv["alias"]).strip()[:80],
+            "hostname": str(srv["hostname"]).strip()[:255],
+            "port": max(1, min(int(srv.get("port", 22)), 65535)),
+            "username": str(srv["username"]).strip()[:80],
+            "purpose": str(srv.get("purpose") or "")[:300],
+            "auth_method": str(srv.get("auth_method") or "ssh_key")[:32],
+            "key_path": str(srv.get("key_path") or "")[:500],
+            "known_hosts_path": str(srv.get("known_hosts_path") or "")[:500],
+            "host_key_fingerprint": str(srv.get("host_key_fingerprint") or "")[:200],
+            "host_key_status": str(srv.get("host_key_status") or "unverified")[:40],
+            "granted_permissions_json": _dump(srv.get("granted_permissions") or []),
+            "authorized_operations_json": _dump(srv.get("authorized_operations") or []),
+            "connection_health": str(srv.get("connection_health") or "unknown")[:40],
+            "last_connected_at": str(srv.get("last_connected_at") or ""),
+            "metadata_json": _dump(srv.get("metadata") or {}),
+            "created_at": str(srv.get("created_at") or now),
+            "updated_at": now,
+        }
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO registered_servers (
+                    id, alias, hostname, port, username, purpose, auth_method, key_path,
+                    known_hosts_path, host_key_fingerprint, host_key_status,
+                    granted_permissions_json, authorized_operations_json, connection_health,
+                    last_connected_at, metadata_json, created_at, updated_at
+                ) VALUES (
+                    :id, :alias, :hostname, :port, :username, :purpose, :auth_method, :key_path,
+                    :known_hosts_path, :host_key_fingerprint, :host_key_status,
+                    :granted_permissions_json, :authorized_operations_json, :connection_health,
+                    :last_connected_at, :metadata_json, :created_at, :updated_at
+                )
+                ON CONFLICT(alias) DO UPDATE SET
+                    hostname=excluded.hostname,
+                    port=excluded.port,
+                    username=excluded.username,
+                    purpose=excluded.purpose,
+                    auth_method=excluded.auth_method,
+                    key_path=excluded.key_path,
+                    known_hosts_path=excluded.known_hosts_path,
+                    host_key_fingerprint=excluded.host_key_fingerprint,
+                    host_key_status=excluded.host_key_status,
+                    granted_permissions_json=excluded.granted_permissions_json,
+                    authorized_operations_json=excluded.authorized_operations_json,
+                    connection_health=excluded.connection_health,
+                    last_connected_at=excluded.last_connected_at,
+                    metadata_json=excluded.metadata_json,
+                    updated_at=excluded.updated_at
+                """,
+                row,
+            )
+        return self.get_registered_server_by_alias(row["alias"]) or {}
+
+    @staticmethod
+    def _unpack_server(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["granted_permissions"] = json.loads(d.pop("granted_permissions_json") or "[]")
+        d["authorized_operations"] = json.loads(d.pop("authorized_operations_json") or "[]")
+        d["metadata"] = json.loads(d.pop("metadata_json") or "{}")
+        return d
+
+    def get_registered_server(self, server_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM registered_servers WHERE id = ?", (server_id,)).fetchone()
+        return self._unpack_server(r) if r else None
+
+    def get_registered_server_by_alias(self, alias: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM registered_servers WHERE alias = ?", (alias.strip(),)).fetchone()
+        return self._unpack_server(r) if r else None
+
+    def list_registered_servers(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM registered_servers ORDER BY alias ASC").fetchall()
+        return [self._unpack_server(r) for r in rows]
+
+    def delete_registered_server(self, alias_or_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute("DELETE FROM registered_servers WHERE id = ? OR alias = ?", (alias_or_id, alias_or_id))
+            return cur.rowcount > 0
+
+    def add_remote_task_run(self, run: dict[str, Any]) -> dict[str, Any]:
+        rid = str(run.get("id") or f"rrun-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO remote_task_runs (
+                    id, server_id, operation, command_summary, dry_run, status,
+                    exit_code, output_excerpt, error_excerpt, duration_ms, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rid,
+                    str(run["server_id"]),
+                    str(run["operation"])[:64],
+                    str(run.get("command_summary") or "")[:300],
+                    int(bool(run.get("dry_run", False))),
+                    str(run["status"])[:32],
+                    run.get("exit_code"),
+                    str(run.get("output_excerpt") or "")[:4000],
+                    str(run.get("error_excerpt") or "")[:2000],
+                    float(run.get("duration_ms", 0.0)),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM remote_task_runs WHERE id = ?", (rid,)).fetchone()
+        return {**dict(r), "dry_run": bool(r["dry_run"])} if r else {}
+
+    def list_remote_task_runs(self, server_id: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM remote_task_runs"
+        params: list[Any] = []
+        if server_id:
+            sql += " WHERE server_id = ?"
+            params.append(server_id)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [{**dict(r), "dry_run": bool(r["dry_run"])} for r in rows]
+
+    def save_infrastructure_knowledge(self, item: dict[str, Any]) -> dict[str, Any]:
+        kid = str(item.get("id") or f"ikb-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        obs = str(item.get("observed_at") or now)
+        rev = str(item.get("revalidated_at") or obs)
+        row = {
+            "id": kid,
+            "category": str(item["category"])[:64],
+            "subject": str(item["subject"])[:200],
+            "content": str(item["content"])[:16_000],
+            "source": str(item.get("source") or "system_probe")[:120],
+            "target_ref": str(item.get("target_ref") or "")[:160],
+            "ttl_seconds": max(60, int(item.get("ttl_seconds", 3600))),
+            "observed_at": obs,
+            "revalidated_at": rev,
+            "metadata_json": _dump(item.get("metadata") or {}),
+            "updated_at": now,
+        }
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO infrastructure_knowledge (
+                    id, category, subject, content, source, target_ref, ttl_seconds,
+                    observed_at, revalidated_at, metadata_json, updated_at
+                ) VALUES (
+                    :id, :category, :subject, :content, :source, :target_ref, :ttl_seconds,
+                    :observed_at, :revalidated_at, :metadata_json, :updated_at
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    category=excluded.category,
+                    subject=excluded.subject,
+                    content=excluded.content,
+                    source=excluded.source,
+                    target_ref=excluded.target_ref,
+                    ttl_seconds=excluded.ttl_seconds,
+                    revalidated_at=excluded.revalidated_at,
+                    metadata_json=excluded.metadata_json,
+                    updated_at=excluded.updated_at
+                """,
+                row,
+            )
+        return self.get_infrastructure_knowledge(kid) or {}
+
+    def get_infrastructure_knowledge(self, kid: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM infrastructure_knowledge WHERE id = ?", (kid,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["metadata"] = json.loads(d.pop("metadata_json") or "{}")
+        return d
+
+    def list_infrastructure_knowledge(self, *, category: str = "", query: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        if query:
+            clauses.append("(LOWER(subject) LIKE ? OR LOWER(content) LIKE ? OR LOWER(target_ref) LIKE ?)")
+            pat = f"%{query.lower()}%"
+            params.extend([pat, pat, pat])
+        sql = "SELECT * FROM infrastructure_knowledge"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["metadata"] = json.loads(d.pop("metadata_json") or "{}")
+            out.append(d)
+        return out
+
+    def delete_infrastructure_knowledge(self, kid: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute("DELETE FROM infrastructure_knowledge WHERE id = ?", (kid,))
+            return cur.rowcount > 0
+
+    def save_remote_node(self, node: dict[str, Any]) -> dict[str, Any]:
+        nid = str(node.get("node_id") or f"node-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        row = {
+            "node_id": nid,
+            "name": str(node["name"])[:120],
+            "role": str(node.get("role") or "dev_server")[:48],
+            "endpoint": str(node.get("endpoint") or "")[:255],
+            "pairing_key_id": str(node.get("pairing_key_id") or "")[:80],
+            "capabilities_json": _dump(node.get("capabilities") or []),
+            "allowed_operations_json": _dump(node.get("allowed_operations") or []),
+            "resources_json": _dump(node.get("resources") or {}),
+            "software_version": str(node.get("software_version") or "0.2.0")[:32],
+            "connection_state": str(node.get("connection_state") or "paired_offline")[:32],
+            "enabled": int(bool(node.get("enabled", True))),
+            "last_seen_at": str(node.get("last_seen_at") or ""),
+            "created_at": str(node.get("created_at") or now),
+            "updated_at": now,
+        }
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO remote_nodes (
+                    node_id, name, role, endpoint, pairing_key_id, capabilities_json,
+                    allowed_operations_json, resources_json, software_version,
+                    connection_state, enabled, last_seen_at, created_at, updated_at
+                ) VALUES (
+                    :node_id, :name, :role, :endpoint, :pairing_key_id, :capabilities_json,
+                    :allowed_operations_json, :resources_json, :software_version,
+                    :connection_state, :enabled, :last_seen_at, :created_at, :updated_at
+                )
+                ON CONFLICT(node_id) DO UPDATE SET
+                    name=excluded.name,
+                    role=excluded.role,
+                    endpoint=excluded.endpoint,
+                    pairing_key_id=excluded.pairing_key_id,
+                    capabilities_json=excluded.capabilities_json,
+                    allowed_operations_json=excluded.allowed_operations_json,
+                    resources_json=excluded.resources_json,
+                    software_version=excluded.software_version,
+                    connection_state=excluded.connection_state,
+                    enabled=excluded.enabled,
+                    last_seen_at=excluded.last_seen_at,
+                    updated_at=excluded.updated_at
+                """,
+                row,
+            )
+            r = conn.execute("SELECT * FROM remote_nodes WHERE node_id = ?", (nid,)).fetchone()
+        return self._unpack_node(r) if r else {}
+
+    @staticmethod
+    def _unpack_node(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["capabilities"] = json.loads(d.pop("capabilities_json") or "[]")
+        d["allowed_operations"] = json.loads(d.pop("allowed_operations_json") or "[]")
+        d["resources"] = json.loads(d.pop("resources_json") or "{}")
+        d["enabled"] = bool(d["enabled"])
+        return d
+
+    def get_remote_node(self, node_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM remote_nodes WHERE node_id = ?", (node_id,)).fetchone()
+        return self._unpack_node(r) if r else None
+
+    def list_remote_nodes(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM remote_nodes ORDER BY name ASC").fetchall()
+        return [self._unpack_node(r) for r in rows]
+
+    def get_startup_recovery_policy(self, defaults: dict[str, Any] | None = None) -> dict[str, Any]:
+        now = utc_now()
+        init_policy = defaults or {}
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO startup_recovery_policy (id, policy_json, safe_recovery_mode, last_unclean_shutdown_reason, updated_at) "
+                "VALUES (1, ?, 0, '', ?)",
+                (_dump(init_policy), now),
+            )
+            r = conn.execute("SELECT * FROM startup_recovery_policy WHERE id = 1").fetchone()
+        saved = json.loads(r["policy_json"] or "{}") if r else {}
+        merged = {**init_policy, **saved}
+        return {
+            "policy": merged,
+            "safe_recovery_mode": bool(r["safe_recovery_mode"]) if r else False,
+            "last_unclean_shutdown_reason": str(r["last_unclean_shutdown_reason"]) if r else "",
+            "updated_at": str(r["updated_at"]) if r else now,
+        }
+
+    def quick_check(self) -> bool:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("PRAGMA quick_check").fetchone()
+        return bool(row and str(row[0]).lower() == "ok")
+
+    def delete_privileged_policy(self, policy_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute("DELETE FROM privileged_helper_policies WHERE id = ?", (policy_id,))
+            return cur.rowcount > 0
+
+    def delete_remote_node(self, node_id_or_name: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM remote_nodes WHERE node_id = ? OR name = ?",
+                (node_id_or_name, node_id_or_name),
+            )
+            return cur.rowcount > 0
+
+    def list_recording_segments(self, recording_id: str) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM recording_segments WHERE recording_id = ? ORDER BY segment_index ASC",
+                (recording_id,),
+            ).fetchall()
+        return [{**dict(r), "finalized": bool(r["finalized"])} for r in rows]
+
+    def update_startup_recovery_policy(
+        self,
+        policy: dict[str, Any],
+        *,
+        safe_recovery_mode: bool | None = None,
+        last_unclean_shutdown_reason: str | None = None,
+    ) -> dict[str, Any]:
+        current = self.get_startup_recovery_policy()
+        next_safe = current["safe_recovery_mode"] if safe_recovery_mode is None else bool(safe_recovery_mode)
+        next_reason = (
+            current["last_unclean_shutdown_reason"]
+            if last_unclean_shutdown_reason is None
+            else str(last_unclean_shutdown_reason)[:300]
+        )
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO startup_recovery_policy (id, policy_json, safe_recovery_mode, last_unclean_shutdown_reason, updated_at)
+                VALUES (1, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    policy_json=excluded.policy_json,
+                    safe_recovery_mode=excluded.safe_recovery_mode,
+                    last_unclean_shutdown_reason=excluded.last_unclean_shutdown_reason,
+                    updated_at=excluded.updated_at
+                """,
+                (_dump(policy), int(next_safe), next_reason, now),
+            )
+        return self.get_startup_recovery_policy()

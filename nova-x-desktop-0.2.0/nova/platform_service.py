@@ -37,9 +37,11 @@ from nova.plugins import PluginManager, builtin_sdk_examples
 from nova.resources import ResourceManager
 from nova.sandbox import Sandbox
 from nova.self_improvement import ControlledImprovementEngine
+from nova.system_access.service import SystemAccessService
 from nova.terminal import TerminalWorkspace
 from nova.tools.creation import build_creation_tools
 from nova.tools.registry import ToolRegistry
+from nova.tools.system_access import build_system_access_tools
 from nova.unified_os import UnifiedOperatingKernel
 from nova.updates import MODE_ONLINE, MODE_PROVIDER_UNAVAILABLE, OfflineCoordinator, UpdateManager
 from nova.workflows import CrossAppCoordinator, WorkflowEngine
@@ -251,6 +253,17 @@ class PlatformService:
             db=self.db,
             platform=self,
         )
+        self.system_access = SystemAccessService(
+            db=self.db,
+            redactor=self.redactor,
+            resource_manager=self.resources,
+            state_dir=data_dir / "system_access",
+            workspace_path=workspace_dir,
+            worker_status_fn=self.unified_os.worker.status,
+        )
+        for sa_tool in build_system_access_tools(lambda: self.system_access):
+            if self.tools.get(sa_tool.name) is None:
+                self.tools.register(sa_tool)
 
     def _register_baseline_integrations(self) -> None:
         self.gateway.register(
@@ -324,6 +337,7 @@ class PlatformService:
             "memory_enabled": self.memory.is_enabled(),
             "desktop_session": self.desktop_control.inspect_session().display_server,
             "worker_status": self.unified_os.worker.status()["status"],
+            "system_access": self.system_access.health_summary(),
             "recommendations": [item.to_dict() for item in recommendation_catalogue()],
         }
 
