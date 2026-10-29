@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -128,6 +128,40 @@ class EvaluationRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     include_held_out: bool = False
     use_baseline: bool = True
+
+
+class KnowledgeSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    query: str = Field(min_length=1, max_length=1_000)
+    limit: int = Field(default=10, ge=1, le=50)
+    project: str = Field(default="", max_length=120)
+    use_semantic: bool = True
+
+
+class KnowledgeIndexTextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    document_id: str = Field(min_length=2, max_length=120)
+    title: str = Field(default="", max_length=200)
+    text: str = Field(min_length=1, max_length=200_000)
+    source_kind: str = Field(default="user_document", max_length=40)
+    project: str = Field(default="", max_length=120)
+
+
+class PluginEnableRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    granted_permissions: list[str] = Field(default_factory=list, max_length=32)
+
+
+class WorkflowProposeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    instruction: str = Field(min_length=3, max_length=2_000)
+    workflow_id: str = Field(default="wf-proposed", min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9_\-]+$")
+
+
+class OfflineModeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: str = Field(min_length=3, max_length=32)
+    reason: str = Field(default="", max_length=300)
 
 
 class GoalCreateRequest(BaseModel):
@@ -368,6 +402,34 @@ def _cognition_health(app_state: Any) -> dict[str, Any]:
     return base
 
 
+def _platform_health(app_state: Any) -> dict[str, Any]:
+    """Platform subsystem summary for `/api/health` (counts/statuses only, crash-proof)."""
+    base: dict[str, Any] = {
+        "operation_mode": "unavailable",
+        "resource_pressure": "unavailable",
+        "sandbox_mechanism": "unavailable",
+        "sandbox_available": False,
+        "fts5_available": False,
+        "degraded": True,
+        "detail": "/api/platform/summary",
+    }
+    engine = getattr(app_state, "engine", None)
+    platform_svc = getattr(app_state, "platform", None) or getattr(engine, "platform", None)
+    if platform_svc is None:
+        return base
+    try:
+        cap = platform_svc.sandbox.detect()
+        base["operation_mode"] = platform_svc.offline.mode
+        base["resource_pressure"] = platform_svc.resources.assess().pressure
+        base["sandbox_mechanism"] = cap.mechanism
+        base["sandbox_available"] = bool(cap.available)
+        base["fts5_available"] = bool(platform_svc.knowledge.fts_available)
+        base["degraded"] = bool(platform_svc.errors)
+    except Exception:
+        base["degraded"] = True
+    return base
+
+
 def create_app(
     settings: Settings | None = None,
     provider: Any | None = None,
@@ -434,6 +496,10 @@ def create_app(
                     await scheduler_task
                 except asyncio.CancelledError:
                     pass
+            try:
+                engine.platform.knowledge.close()
+            except Exception:
+                pass
 
     app = FastAPI(title="NOVA X", version=__version__, docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.settings = settings
@@ -444,6 +510,7 @@ def create_app(
     app.state.tools = registry
     app.state.autonomy_policy = autonomy_policy
     app.state.engine = engine
+    app.state.platform = engine.platform
     app.state.goal_scheduler_enabled = settings.goal_scheduler_enabled and settings.max_scheduled_goal_runs_per_day > 0
     app.state.goal_scheduler_status = "not_started"
     app.state.goal_scheduler_limit_per_day = settings.max_scheduled_goal_runs_per_day
@@ -537,6 +604,7 @@ def create_app(
                 "execution": "in-process only; scheduled work pauses when the server sleeps or stops",
             },
             "cognition": _cognition_health(app.state),
+            "platform": _platform_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -918,6 +986,155 @@ def create_app(
             commit=_git_commit(),
             use_baseline=body.use_baseline,
         )
+
+    @app.get("/api/platform/summary")
+    async def get_platform_summary() -> dict[str, Any]:
+        return engine.platform.summary()
+
+    @app.get("/api/platform/capabilities")
+    async def get_platform_capabilities(refresh: bool = False) -> dict[str, Any]:
+        engine.platform.capabilities.check_all(force=refresh)
+        return engine.platform.capabilities.snapshot()
+
+    @app.get("/api/platform/resources")
+    async def get_platform_resources() -> dict[str, Any]:
+        engine.platform.resources.assess()
+        return engine.platform.resources.snapshot()
+
+    @app.get("/api/platform/sandbox")
+    async def get_platform_sandbox() -> dict[str, Any]:
+        return engine.platform.sandbox.report()
+
+    @app.get("/api/platform/events")
+    async def get_platform_events(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
+        return {
+            "stats": engine.platform.events.stats(),
+            "subscriptions": engine.platform.events.subscriptions(),
+            "history": engine.platform.events.history(limit=limit),
+        }
+
+    @app.get("/api/platform/knowledge/stats")
+    async def get_knowledge_stats() -> dict[str, Any]:
+        return engine.platform.knowledge.stats()
+
+    @app.post("/api/platform/knowledge/search")
+    async def search_knowledge(body: KnowledgeSearchRequest) -> dict[str, Any]:
+        return engine.platform.knowledge.search(
+            body.query,
+            limit=body.limit,
+            project=body.project,
+            use_semantic=body.use_semantic,
+        )
+
+    @app.post("/api/platform/knowledge/index")
+    async def index_knowledge_text(body: KnowledgeIndexTextRequest) -> dict[str, Any]:
+        outcome = engine.platform.knowledge.index_text(
+            body.text,
+            document_id=body.document_id,
+            title=body.title,
+            source_kind=body.source_kind,
+            project=body.project,
+        )
+        if outcome.action == "refused":
+            raise HTTPException(status_code=422, detail=outcome.reason)
+        return outcome.to_dict()
+
+    @app.get("/api/platform/observability/spans")
+    async def get_observability_spans(
+        task_id: str = Query(default="", max_length=80),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict[str, Any]:
+        return {
+            "stats": engine.platform.traces.stats(),
+            "spans": engine.platform.traces.list_spans(task_id=task_id, limit=limit),
+        }
+
+    @app.get("/api/platform/observability/tasks/{task_id}")
+    async def explain_task_observability(task_id: str) -> dict[str, Any]:
+        if database.get_task(task_id) is None:
+            raise HTTPException(status_code=404, detail="Task not found.")
+        return engine.platform.traces.explain_task(task_id)
+
+    @app.get("/api/platform/privacy/inventory")
+    async def get_privacy_inventory() -> dict[str, Any]:
+        return engine.platform.privacy.inventory()
+
+    @app.get("/api/platform/privacy/export")
+    async def export_privacy_user_data() -> dict[str, Any]:
+        return engine.platform.privacy.export_user_data()
+
+    @app.get("/api/platform/health-center")
+    async def get_health_center() -> dict[str, Any]:
+        return engine.platform.health_center.status()
+
+    @app.get("/api/platform/diagnostics/export")
+    async def export_diagnostics_bundle() -> dict[str, Any]:
+        return engine.platform.health_center.export_diagnostic_report(
+            configuration_checks={"low_resource_mode": settings.low_resource_mode, "verify_tasks": settings.verify_tasks}
+        )
+
+    @app.get("/api/platform/updates")
+    async def get_update_status() -> dict[str, Any]:
+        return engine.platform.updates.status()
+
+    @app.get("/api/platform/offline")
+    async def get_offline_status() -> dict[str, Any]:
+        return engine.platform.offline.status()
+
+    @app.post("/api/platform/offline/mode")
+    async def set_offline_mode(body: OfflineModeRequest) -> dict[str, Any]:
+        try:
+            return engine.platform.offline.set_mode(body.mode, reason=body.reason)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/platform/plugins")
+    async def list_platform_plugins() -> dict[str, Any]:
+        return {"plugins": engine.platform.plugins.list_plugins()}
+
+    @app.post("/api/platform/plugins/{plugin_name}/enable")
+    async def enable_platform_plugin(plugin_name: str, body: PluginEnableRequest) -> dict[str, Any]:
+        res = engine.platform.plugins.enable(plugin_name, granted_permissions=body.granted_permissions)
+        if not res.get("enabled"):
+            raise HTTPException(status_code=422, detail=res.get("reason", "Could not enable plugin."))
+        bound = engine.platform.plugins.register_into_tool_registry(registry)
+        return {**res, "registered_tools": bound}
+
+    @app.post("/api/platform/plugins/{plugin_name}/disable")
+    async def disable_platform_plugin(plugin_name: str) -> dict[str, Any]:
+        if not engine.platform.plugins.disable(plugin_name):
+            raise HTTPException(status_code=404, detail="Plugin not found.")
+        return {"disabled": True, "plugin": plugin_name}
+
+    @app.get("/api/platform/integrations")
+    async def list_platform_integrations() -> dict[str, Any]:
+        return {"integrations": engine.platform.gateway.list_integrations()}
+
+    @app.get("/api/platform/mcp/servers")
+    async def list_mcp_servers() -> dict[str, Any]:
+        return {"servers": engine.platform.mcp.list_servers()}
+
+    @app.get("/api/platform/workflows/history")
+    async def get_workflow_history() -> dict[str, Any]:
+        return {"history": engine.platform.workflows.history()}
+
+    @app.post("/api/platform/workflows/propose")
+    async def propose_workflow(body: WorkflowProposeRequest) -> dict[str, Any]:
+        return engine.platform.workflows.propose_from_instruction(body.instruction, workflow_id=body.workflow_id)
+
+    @app.get("/api/platform/devtools/environment")
+    async def get_devtools_environment() -> dict[str, Any]:
+        return {
+            "environment": engine.platform.devtools.inspect_dev_environment(),
+            "dependencies": engine.platform.devtools.inspect_dependencies(),
+        }
+
+    @app.get("/api/platform/modalities")
+    async def get_modalities_status() -> dict[str, Any]:
+        return {
+            "visual": engine.platform.visual.capabilities(),
+            "voice": engine.platform.voice.status(),
+        }
 
     @app.get("/api/goals")
     async def get_goals() -> dict[str, Any]:

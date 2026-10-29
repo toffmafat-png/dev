@@ -151,6 +151,7 @@ class DesktopRuntime:
         self.intelligence = IntelligenceOrchestrator(self.model_manager, self.settings, self.database)
         self.autonomy_policy = AutonomyPolicy(self.settings, self.database, self.registry)
         self.engine = TaskEngine(self.database, self.intelligence, self.registry, self.settings, self.autonomy_policy)
+        self.platform = self.engine.platform
         self.async_service = AsyncService()
         self.closed = False
         self.database.recover_interrupted_tasks()
@@ -397,8 +398,35 @@ class DesktopRuntime:
             {"name": "AI profiles", "status": "ready" if any(item.get("available") for item in profiles) else "optional", "detail": f"{sum(bool(item.get('configured')) for item in profiles)} configured · {sum(bool(item.get('connected')) for item in profiles)} connected · {sum(bool(item.get('tested')) for item in profiles)} tested. No live inference is performed by diagnostics."},
             {"name": "Web research", "status": "ready" if self.settings.tavily_api_key else "optional", "detail": "Configured; any provider usage may incur account charges." if self.settings.tavily_api_key else "Not configured; task runner will report this tool unavailable."},
             {"name": "Background service", "status": "disabled", "detail": "No always-on or network service is installed. Tasks run only while this desktop app is open."},
+            {
+                "name": "Execution sandbox",
+                "status": "ready" if self.platform.sandbox.detect().available else "missing",
+                "detail": f"Mechanism: {self.platform.sandbox.detect().mechanism} ({self.platform.sandbox.detect().detail})",
+            },
+            {
+                "name": "Knowledge FTS5",
+                "status": "ready" if self.platform.knowledge.fts_available else "attention",
+                "detail": "SQLite FTS5 full-text search active." if self.platform.knowledge.fts_available else "Substring fallback active.",
+            },
+            {
+                "name": "Resource adaptation",
+                "status": "ready",
+                "detail": f"Pressure: {self.platform.resources.assess().pressure} · mode: {self.platform.offline.mode}",
+            },
         ]
-        return {"checks": checks, "secret_backend": keyring, "providers": profiles, "database_path": str(self.settings.db_path), "workspace_roots": self.workspace_roots()}
+        return {
+            "checks": checks,
+            "secret_backend": keyring,
+            "providers": profiles,
+            "database_path": str(self.settings.db_path),
+            "workspace_roots": self.workspace_roots(),
+            "platform_summary": self.platform.summary(),
+        }
+
+    def export_diagnostic_bundle(self) -> dict[str, Any]:
+        return self.platform.health_center.export_diagnostic_report(
+            configuration_checks={"desktop_diagnostics": self.diagnostics()["checks"]}
+        )
 
     def save_provider_profile(self, data: dict[str, Any], api_key: str = "") -> dict[str, Any]:
         provider = str(data.get("provider_type", ""))
@@ -448,6 +476,10 @@ class DesktopRuntime:
         self.closed = True
         try:
             self.async_service.submit(self.emergency_stop()).result(timeout=10)
+        except Exception:
+            pass
+        try:
+            self.platform.knowledge.close()
         except Exception:
             pass
         self.async_service.stop()

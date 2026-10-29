@@ -80,7 +80,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
-      - name: Pytest
+      - name: Integration Testing Matrix (§114)
+        run: python -m pytest tests/test_integration_matrix.py -q
+
+      - name: Pytest (full suite)
         run: python -m pytest -q
 
   intelligence-eval:
