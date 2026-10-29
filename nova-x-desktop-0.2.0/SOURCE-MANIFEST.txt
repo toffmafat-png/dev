@@ -8,14 +8,18 @@ Contents:
   README.md
   app.py
   docs/COGNITION.md
+  docs/EXTENSION_SDK.md
   docs/FEATURE_MATRIX.md
   docs/INTEGRATIONS.md
   docs/NATIVE_DESKTOP.md
+  docs/PLATFORM_ARCHITECTURE.md
+  docs/RELEASE_CHECKLIST.md
   docs/ROADMAP.md
   docs/SECURITY.md
   docs/TESTING.md
   nova/__init__.py
   nova/autonomy.py
+  nova/capabilities.py
   nova/cognition/__init__.py
   nova/cognition/__main__.py
   nova/cognition/curiosity.py
@@ -28,6 +32,8 @@ Contents:
   nova/cognition/service.py
   nova/cognition/world_model.py
   nova/config.py
+  nova/context_manager.py
+  nova/data_workspace.py
   nova/db.py
   nova/desktop/__init__.py
   nova/desktop/app.py
@@ -36,16 +42,31 @@ Contents:
   nova/desktop/policy.py
   nova/desktop/runtime.py
   nova/desktop/secrets.py
+  nova/devtools.py
   nova/engine.py
+  nova/events.py
+  nova/governance.py
   nova/intelligence.py
+  nova/knowledge.py
   nova/main.py
+  nova/mcp_client.py
+  nova/modalities.py
   nova/model_providers.py
+  nova/observability.py
+  nova/platform_service.py
+  nova/plugins.py
   nova/provider.py
+  nova/resources.py
+  nova/sandbox.py
+  nova/sandbox_child.py
+  nova/terminal.py
   nova/tools/__init__.py
   nova/tools/calculator.py
   nova/tools/registry.py
   nova/tools/research.py
   nova/tools/workspace.py
+  nova/updates.py
+  nova/workflows.py
   packaging/debian/README.Debian
   packaging/debian/control
   packaging/debian/nova-x.desktop
@@ -69,8 +90,10 @@ Contents:
   tests/test_desktop_ui.py
   tests/test_engine.py
   tests/test_goals.py
+  tests/test_integration_matrix.py
   tests/test_intelligence.py
   tests/test_model_providers.py
+  tests/test_platform_stack.py
   tests/test_provider.py
   tests/test_regressions.py
   tests/test_tools.py
@@ -85,6 +108,10 @@ Notes:
     `python -m nova.cognition` (offline, deterministic, zero provider calls) and
     its state is persisted in seven cognition_* / intelligence_eval_runs tables
     created by nova/db.py.
+  * The §90–§115 modular local platform stack is coordinated by
+    nova/platform_service.py and documented in docs/PLATFORM_ARCHITECTURE.md,
+    docs/EXTENSION_SDK.md, and docs/RELEASE_CHECKLIST.md. The 18-case §114
+    integration matrix lives in tests/test_integration_matrix.py.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).

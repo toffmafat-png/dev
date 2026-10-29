@@ -1,0 +1,280 @@
+"""§90 Modular technology platform service layer.
+
+Wires NOVA X's §91–§113 subsystems into one coherent, local-first service object
+shared by ``TaskEngine``, the native Qt ``DesktopRuntime`` and the local HTTP
+surface without forcing optional external dependencies into the core install.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from nova.autonomy import AutonomyPolicy
+from nova.capabilities import CapabilityRegistry, prioritize, recommendation_catalogue
+from nova.config import Settings
+from nova.context_manager import ContextOptimizer
+from nova.data_workspace import DataWorkspace
+from nova.db import Database
+from nova.devtools import DeveloperWorkspace
+from nova.events import Event, EventBus
+from nova.governance import PrivacyGovernor, SystemHealthCenter
+from nova.knowledge import KnowledgeStore
+from nova.mcp_client import IntegrationGateway, IntegrationRecord, MCPClientManager
+from nova.modalities import (
+    DeterministicLoopbackRecognizer,
+    DeterministicLoopbackSynthesizer,
+    VisualAssistant,
+    VoiceLayer,
+)
+from nova.observability import Redactor, TraceCollector
+from nova.plugins import PluginManager, builtin_sdk_examples
+from nova.resources import ResourceManager
+from nova.sandbox import Sandbox
+from nova.terminal import TerminalWorkspace
+from nova.tools.registry import ToolRegistry
+from nova.updates import MODE_ONLINE, MODE_PROVIDER_UNAVAILABLE, OfflineCoordinator, UpdateManager
+from nova.workflows import CrossAppCoordinator, WorkflowEngine
+
+logger = logging.getLogger(__name__)
+
+
+def _iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="microseconds")
+
+
+@dataclass
+class PlatformService:
+    """Unified facade over NOVA X's advanced local platform capabilities (§90–§113)."""
+
+    settings: Settings
+    db: Database
+    tools: ToolRegistry
+    autonomy_policy: AutonomyPolicy
+    repo_root: Path | None = None
+    errors: int = 0
+    last_error: str = ""
+
+    redactor: Redactor = field(init=False)
+    traces: TraceCollector = field(init=False)
+    capabilities: CapabilityRegistry = field(init=False)
+    resources: ResourceManager = field(init=False)
+    sandbox: Sandbox = field(init=False)
+    events: EventBus = field(init=False)
+    knowledge: KnowledgeStore = field(init=False)
+    context: ContextOptimizer = field(init=False)
+    plugins: PluginManager = field(init=False)
+    mcp: MCPClientManager = field(init=False)
+    gateway: IntegrationGateway = field(init=False)
+    terminal: TerminalWorkspace = field(init=False)
+    workflows: WorkflowEngine = field(init=False)
+    cross_app: CrossAppCoordinator = field(init=False)
+    devtools: DeveloperWorkspace = field(init=False)
+    data_workspace: DataWorkspace = field(init=False)
+    visual: VisualAssistant = field(init=False)
+    voice: VoiceLayer = field(init=False)
+    updates: UpdateManager = field(init=False)
+    offline: OfflineCoordinator = field(init=False)
+    privacy: PrivacyGovernor = field(init=False)
+    health_center: SystemHealthCenter = field(init=False)
+
+    def __post_init__(self) -> None:
+        data_dir = Path(self.settings.data_dir)
+        workspace_dir = Path(self.settings.workspace_dir)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+
+        secrets = tuple(
+            s
+            for s in (
+                self.settings.ai_api_key,
+                self.settings.access_token,
+                self.settings.tavily_api_key,
+            )
+            if s
+        )
+        self.redactor = Redactor(literal_secrets=secrets)
+        self.traces = TraceCollector(redactor=self.redactor)
+
+        self.capabilities = CapabilityRegistry(
+            credentials={
+                "ai_api_key": bool(self.settings.ai_api_key),
+                "tavily_api_key": bool(self.settings.tavily_api_key),
+            },
+            configuration={
+                "low_resource_mode": bool(self.settings.low_resource_mode),
+                "verify_tasks": bool(self.settings.verify_tasks),
+            },
+        )
+        self.resources = ResourceManager(
+            disk_path=str(data_dir),
+            low_resource_mode=bool(self.settings.low_resource_mode),
+            baseline_parallel_tasks=self.settings.max_parallel_tasks,
+            baseline_model_concurrency=self.settings.max_model_concurrency,
+        )
+        self.sandbox = Sandbox()
+        self.events = EventBus(permission_check=self.autonomy_policy.decide)
+
+        self.knowledge = KnowledgeStore(
+            db_path=str(data_dir / "knowledge.sqlite3"),
+            workspace_root=str(workspace_dir),
+        )
+        self.context = ContextOptimizer(
+            budget_chars=min(self.settings.max_context_chars, 24_000),
+            redactor=self.redactor,
+            knowledge_store=self.knowledge,
+        )
+
+        self.plugins = PluginManager(
+            plugins_dir=data_dir / "plugins",
+            workspace_root=workspace_dir,
+            sandbox=self.sandbox,
+            redactor=self.redactor,
+        )
+        # Register the 4 §109 reference SDK extensions (disabled by default until enabled).
+        for example in builtin_sdk_examples():
+            self.plugins.register_sdk_extension(example, auto_enable=False)
+
+        self.mcp = MCPClientManager(permission_check=self.autonomy_policy.decide, redactor=self.redactor)
+        self.gateway = IntegrationGateway(redactor=self.redactor)
+        self._register_baseline_integrations()
+
+        self.terminal = TerminalWorkspace(
+            default_cwd=workspace_dir,
+            redactor=self.redactor,
+            capture_limit_chars=self.settings.max_tool_output_chars,
+        )
+
+        async def _exec_tool(tool_name: str, args: dict[str, Any], approved: bool) -> dict[str, Any]:
+            outcome = await self.tools.execute(tool_name, args, approved=approved)
+            return outcome.as_dict()
+
+        self.workflows = WorkflowEngine(
+            permission_check=self.autonomy_policy.decide,
+            tool_executor=_exec_tool,
+            available_tools_fn=lambda: {t["name"] for t in self.tools.all_tools() if t.get("available")},
+        )
+        self.cross_app = CrossAppCoordinator(workspace_root=workspace_dir)
+
+        resolved_repo = Path(self.repo_root).resolve() if self.repo_root else Path(__file__).resolve().parent.parent
+        self.devtools = DeveloperWorkspace(repo_root=resolved_repo, sandbox=self.sandbox)
+        self.data_workspace = DataWorkspace(workspace_root=workspace_dir)
+
+        self.visual = VisualAssistant(workspace_root=workspace_dir)
+        self.voice = VoiceLayer(
+            recognizers=[DeterministicLoopbackRecognizer()],
+            synthesizers=[DeterministicLoopbackSynthesizer()],
+        )
+
+        self.updates = UpdateManager(db=self.db, staging_dir=data_dir / "updates")
+        self.offline = OfflineCoordinator(
+            resources=self.resources,
+            mode=MODE_ONLINE if self.settings.ai_configured else MODE_PROVIDER_UNAVAILABLE,
+            degraded_reason="" if self.settings.ai_configured else "no cloud model credentials configured; running local-first",
+        )
+
+        self.privacy = PrivacyGovernor(
+            db=self.db,
+            redactor=self.redactor,
+            knowledge_store=self.knowledge,
+            traces=self.traces,
+            artifacts_dir=workspace_dir,
+            credential_descriptors=lambda: [
+                {"name": "AI_API_KEY", "storage": "secret_service_or_env", "configured": bool(self.settings.ai_api_key)},
+                {"name": "TAVILY_API_KEY", "storage": "secret_service_or_env", "configured": bool(self.settings.tavily_api_key)},
+                {"name": "NOVA_ACCESS_TOKEN", "storage": "env", "configured": bool(self.settings.access_token)},
+            ],
+        )
+        self.health_center = SystemHealthCenter(
+            db=self.db,
+            resources=self.resources,
+            redactor=self.redactor,
+            traces=self.traces,
+            provider_status_fn=lambda: {
+                "available": self.settings.ai_configured,
+                "mode": self.offline.mode,
+            },
+            processes_fn=self.terminal.active_nova_processes,
+            integrations_fn=self.gateway.list_integrations,
+            pending_updates_fn=self.updates.status,
+        )
+
+    def _register_baseline_integrations(self) -> None:
+        self.gateway.register(
+            IntegrationRecord(
+                integration_id="primary_ai_provider",
+                kind="ai_provider",
+                label="Primary OpenAI-Compatible Provider",
+                capabilities=self.settings.ai_model_capabilities,
+                supported_operations={"chat.completions": "inference:chat"},
+                minimum_scopes=("inference:chat",),
+                granted_scopes=("inference:chat",) if self.settings.ai_configured else (),
+                credentials_present=self.settings.ai_configured,
+                rate_limit_per_minute=self.settings.max_ai_requests_per_minute,
+            )
+        )
+        self.gateway.register(
+            IntegrationRecord(
+                integration_id="tavily_search",
+                kind="external_service",
+                label="Tavily Web Research",
+                capabilities=("web_search",),
+                supported_operations={"web.search": "search:query"},
+                minimum_scopes=("search:query",),
+                granted_scopes=("search:query",) if bool(self.settings.tavily_api_key) else (),
+                credentials_present=bool(self.settings.tavily_api_key),
+                rate_limit_per_minute=20,
+            )
+        )
+
+    async def safe_emit_event(self, event_type: str, source: str, *, task_id: str = "", payload: dict[str, Any] | None = None) -> None:
+        """Emit an event without ever allowing a bus error to disrupt task execution."""
+        try:
+            await self.events.emit(
+                Event(
+                    type=event_type,
+                    source=source,
+                    occurred_at=_iso(),
+                    task_id=task_id,
+                    payload=self.redactor.scrub(dict(payload or {})),
+                )
+            )
+        except Exception as exc:
+            self.errors += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("platform event emit failed safely (%s)", self.last_error)
+
+    def safe_record_span(self, **kwargs: Any) -> None:
+        try:
+            self.traces.record(**kwargs)
+        except Exception as exc:
+            self.errors += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
+
+    def summary(self) -> dict[str, Any]:
+        """Compact, secret-free summary for health & UI surfaces."""
+        sbx_cap = self.sandbox.detect()
+        budget = self.resources.assess()
+        return {
+            "degraded": bool(self.errors),
+            "errors": self.errors,
+            "operation_mode": self.offline.mode,
+            "resource_pressure": budget.pressure,
+            "sandbox_mechanism": sbx_cap.mechanism,
+            "sandbox_available": sbx_cap.available,
+            "fts5_available": self.knowledge.fts_available,
+            "plugins_installed": len(self.plugins.list_plugins()),
+            "mcp_servers_registered": len(self.mcp.list_servers()),
+            "event_bus": self.events.stats(),
+            "observability": self.traces.stats(),
+            "recommendations": [item.to_dict() for item in recommendation_catalogue()],
+        }
+
+    @staticmethod
+    def prioritize_recommendations(scores: dict[str, dict[str, Any]], *, goals: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+        return [item.to_dict() for item in prioritize(scores, goals=goals)]
+
+
+__all__ = ["PlatformService"]

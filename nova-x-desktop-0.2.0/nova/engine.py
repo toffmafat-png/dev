@@ -12,6 +12,17 @@ from nova.autonomy import AutonomyPolicy
 from nova.cognition.service import CognitionService
 from nova.config import Settings
 from nova.db import Database
+from nova.observability import (
+    SPAN_MODEL_CALL,
+    SPAN_TASK,
+    SPAN_TOOL_CALL,
+    SPAN_VERIFICATION,
+    STATUS_CANCELLED,
+    STATUS_DENIED,
+    STATUS_ERROR,
+    STATUS_OK,
+)
+from nova.platform_service import PlatformService
 from nova.provider import ProviderConfigurationError, ProviderError
 from nova.tools.registry import ToolOutcome, ToolRegistry
 
@@ -109,6 +120,7 @@ class TaskEngine:
         settings: Settings,
         autonomy_policy: AutonomyPolicy | None = None,
         cognition: CognitionService | None = None,
+        platform: PlatformService | None = None,
     ):
         self.db = db
         self.provider = provider
@@ -128,6 +140,12 @@ class TaskEngine:
             max_tool_calls=int(getattr(settings, "max_task_steps", 8) or 8),
             authorized_roots=(workspace_root,) if workspace_root else (),
             verification_enabled=bool(getattr(settings, "verify_tasks", True)),
+        )
+        self.platform = platform or PlatformService(
+            settings=settings,
+            db=db,
+            tools=tools,
+            autonomy_policy=self.autonomy_policy,
         )
 
     def launch(self, task_id: str) -> None:
@@ -471,6 +489,7 @@ class TaskEngine:
             **outcome.as_dict(),
         })
         self._observe_tool_result(task_id, checkpoint, action, outcome)
+        self._trace_tool_result(task_id, action, outcome)
         elapsed = prior_elapsed + time.monotonic() - run_started
         checkpoint["elapsed_seconds"] = elapsed
         self.db.update_task(
@@ -552,6 +571,7 @@ class TaskEngine:
                     checkpoint["cost_estimate_complete"] = False
                 self.db.update_task(task_id, token_usage=checkpoint["token_usage"])
                 self._save_checkpoint(task_id, checkpoint, run_started, prior_elapsed)
+                self._trace_model_call(task_id, intelligence, attempt, status=STATUS_OK)
                 return message
             except ProviderError as exc:
                 failed_requests = int(getattr(exc, "provider_requests", 0) or (1 if getattr(exc, "request_started", False) else 0))
@@ -630,6 +650,14 @@ class TaskEngine:
         if status not in {"verified", "partial", "unverified"}:
             status = "unverified"
         note = str(parsed.get("note", "Evidence review did not return a usable status."))[:500]
+        self.platform.safe_record_span(
+            name="task_verification",
+            kind=SPAN_VERIFICATION,
+            task_id=task_id,
+            status=STATUS_OK if status in {"verified", "partial"} else STATUS_ERROR,
+            verification_status=status,
+            result_summary=note,
+        )
         return status, note
 
     def _save_checkpoint(self, task_id: str, checkpoint: dict[str, Any], run_started: float, prior_elapsed: float) -> None:
@@ -750,7 +778,45 @@ class TaskEngine:
         if reinspect:
             cognition_state["requires_reinspection"] = reinspect[:20]
 
+    def _trace_tool_result(self, task_id: str, action: dict[str, Any], outcome: ToolOutcome) -> None:
+        span_status = STATUS_OK if outcome.status == "success" else (STATUS_DENIED if outcome.status == "denied" else STATUS_ERROR)
+        exit_code = outcome.data.get("exit_code") if isinstance(outcome.data, dict) else None
+        self.platform.safe_record_span(
+            name=f"tool:{action.get('name') or 'unknown'}",
+            kind=SPAN_TOOL_CALL,
+            task_id=task_id,
+            tool_name=str(action.get("name") or "unknown"),
+            status=span_status,
+            exit_code=exit_code if isinstance(exit_code, int) else None,
+            result_summary=outcome.summary,
+        )
+
+    def _trace_model_call(self, task_id: str, intelligence: dict[str, Any], retries: int, *, status: str) -> None:
+        models = [m.get("model_id") or m.get("name") for m in (intelligence.get("models") or []) if isinstance(m, dict)]
+        model_label = ",".join(str(m) for m in models if m) or str(self.settings.ai_model or "provider")
+        latencies = [float(m["latency_ms"]) for m in (intelligence.get("models") or []) if isinstance(m, dict) and m.get("latency_ms") is not None]
+        cost = intelligence.get("estimated_cost_usd")
+        self.platform.safe_record_span(
+            name="provider_chat",
+            kind=SPAN_MODEL_CALL,
+            task_id=task_id,
+            model=model_label,
+            status=status,
+            retries=retries,
+            duration_ms=sum(latencies) if latencies else 0.0,
+            cost_usd=float(cost) if cost is not None else None,
+        )
+
     def _reflect(self, task_id: str, state: str, message: str, checkpoint: dict[str, Any]) -> None:
+        span_st = STATUS_OK if state == "completed" else (STATUS_CANCELLED if state == "cancelled" else STATUS_ERROR)
+        self.platform.safe_record_span(
+            name=f"task:{state}",
+            kind=SPAN_TASK,
+            task_id=task_id,
+            status=span_st,
+            duration_ms=float(checkpoint.get("elapsed_seconds", 0.0) or 0.0) * 1000.0,
+            result_summary=message,
+        )
         """Post-hoc attribution, calibration and procedure learning for one run."""
         try:
             task = self.db.get_task(task_id) or {}
