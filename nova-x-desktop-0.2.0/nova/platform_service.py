@@ -16,6 +16,7 @@ from nova.autonomy import AutonomyPolicy
 from nova.capabilities import CapabilityRegistry, prioritize, recommendation_catalogue
 from nova.config import Settings
 from nova.context_manager import ContextOptimizer
+from nova.creation.engine import UniversalCreationEngine
 from nova.data_workspace import DataWorkspace
 from nova.db import Database
 from nova.devtools import DeveloperWorkspace
@@ -34,6 +35,7 @@ from nova.plugins import PluginManager, builtin_sdk_examples
 from nova.resources import ResourceManager
 from nova.sandbox import Sandbox
 from nova.terminal import TerminalWorkspace
+from nova.tools.creation import build_creation_tools
 from nova.tools.registry import ToolRegistry
 from nova.updates import MODE_ONLINE, MODE_PROVIDER_UNAVAILABLE, OfflineCoordinator, UpdateManager
 from nova.workflows import CrossAppCoordinator, WorkflowEngine
@@ -79,6 +81,7 @@ class PlatformService:
     offline: OfflineCoordinator = field(init=False)
     privacy: PrivacyGovernor = field(init=False)
     health_center: SystemHealthCenter = field(init=False)
+    creation: UniversalCreationEngine = field(init=False)
 
     def __post_init__(self) -> None:
         data_dir = Path(self.settings.data_dir)
@@ -200,6 +203,23 @@ class PlatformService:
             integrations_fn=self.gateway.list_integrations,
             pending_updates_fn=self.updates.status,
         )
+        self.creation = UniversalCreationEngine(
+            db=self.db,
+            workspace_root=workspace_dir,
+            resources=self.resources,
+            redactor=self.redactor,
+            plugins=self.plugins,
+            workflows=self.workflows,
+            permission_check=self.autonomy_policy.decide,
+            provider_status_fn=lambda: {
+                "configured": bool(self.settings.ai_configured),
+                "capabilities": tuple(self.settings.ai_model_capabilities),
+            },
+            integrations_fn=self.gateway.list_integrations,
+        )
+        for creation_tool in build_creation_tools(lambda: self.creation):
+            if self.tools.get(creation_tool.name) is None:
+                self.tools.register(creation_tool)
 
     def _register_baseline_integrations(self) -> None:
         self.gateway.register(
@@ -269,6 +289,7 @@ class PlatformService:
             "mcp_servers_registered": len(self.mcp.list_servers()),
             "event_bus": self.events.stats(),
             "observability": self.traces.stats(),
+            "creation": self.creation.summary(),
             "recommendations": [item.to_dict() for item in recommendation_catalogue()],
         }
 

@@ -152,6 +152,7 @@ class DesktopRuntime:
         self.autonomy_policy = AutonomyPolicy(self.settings, self.database, self.registry)
         self.engine = TaskEngine(self.database, self.intelligence, self.registry, self.settings, self.autonomy_policy)
         self.platform = self.engine.platform
+        self.creation = self.platform.creation
         self.async_service = AsyncService()
         self.closed = False
         self.database.recover_interrupted_tasks()
@@ -413,6 +414,14 @@ class DesktopRuntime:
                 "status": "ready",
                 "detail": f"Pressure: {self.platform.resources.assess().pressure} · mode: {self.platform.offline.mode}",
             },
+            {
+                "name": "Creation engine",
+                "status": "ready",
+                "detail": (
+                    f"{self.creation.summary()['installed_technology_count']}/{self.creation.summary()['total_registered_technologies']} "
+                    f"host tools detected across {len(self.creation.summary()['supported_domains'])} domain(s)."
+                ),
+            },
         ]
         return {
             "checks": checks,
@@ -427,6 +436,61 @@ class DesktopRuntime:
         return self.platform.health_center.export_diagnostic_report(
             configuration_checks={"desktop_diagnostics": self.diagnostics()["checks"]}
         )
+
+    # ---------------------------------------- §146 Native Creation Studio API
+
+    def creation_studio_snapshot(self) -> dict[str, Any]:
+        disc = self.creation.discovery.discover(refresh=False)
+        return {
+            "summary": self.creation.summary(),
+            "projects": self.database.list_creation_projects(limit=50),
+            "blueprints": self.database.list_creation_blueprints(limit=50),
+            "installed_tools": [a["name"] for a in disc["installed_applications"]],
+            "missing_optional_tools": [m["name"] for m in disc["missing_optional_dependencies"][:8]],
+            "processable_formats": disc["processable_formats"],
+            "resource_budget": self.platform.resources.assess().to_dict(),
+            "models": self.model_manager.list_profiles(),
+        }
+
+    def recognize_creation_intent(self, prompt: str) -> dict[str, Any]:
+        return self.creation.recognize_intent(prompt)
+
+    async def create_deliverable(
+        self,
+        prompt: str,
+        *,
+        name: str = "",
+        domain_override: str = "",
+        package: bool = True,
+    ) -> dict[str, Any]:
+        return await self.creation.create_from_intent(
+            prompt,
+            name=name,
+            domain_override=domain_override,
+            package=package,
+        )
+
+    async def continue_creation_project(self, project_id: str, instruction: str = "", *, resume_checkpoint: bool = False) -> dict[str, Any]:
+        return await self.creation.continue_project(
+            project_id,
+            instruction=instruction,
+            action="resume_checkpoint" if resume_checkpoint else "refine",
+        )
+
+    async def package_creation_project(self, project_id: str, archive_format: str = "tar.gz") -> dict[str, Any]:
+        return await self.creation.package_project(project_id, archive_format=archive_format)
+
+    def open_creation_project(self, project_id: str) -> dict[str, Any] | None:
+        return self.creation.workspace.open_project(project_id)
+
+    def compare_creation_revisions(self, project_id: str) -> dict[str, Any]:
+        return self.creation.workspace.lineage.compare_revisions(project_id)
+
+    def create_blueprint_from_project(self, project_id: str) -> dict[str, Any]:
+        proj = self.database.get_creation_project(project_id)
+        if proj is None:
+            raise KeyError(f"Project '{project_id}' not found.")
+        return self.creation.workspace.blueprints.create_from_project(proj)
 
     def save_provider_profile(self, data: dict[str, Any], api_key: str = "") -> dict[str, Any]:
         provider = str(data.get("provider_type", ""))
