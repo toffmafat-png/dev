@@ -507,6 +507,42 @@ def _creation_health(app_state: Any) -> dict[str, Any]:
     return base
 
 
+class MemoryStoreRequest(BaseModel):
+    category: str = Field("user_preferences", min_length=1, max_length=64)
+    subject: str = Field(..., min_length=1, max_length=200)
+    content: str = Field(..., min_length=1, max_length=16_000)
+    provenance: str = Field("user_approved_preference", max_length=64)
+    project_id: str = Field("", max_length=80)
+    evidence_verified: bool = False
+
+
+class UnifiedPipelineRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=16_000)
+    domain_override: str = Field("", max_length=64)
+    package: bool = True
+
+
+def _unified_os_health(app_state: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "version": "nova-unified-os-v1",
+        "modules": 12,
+        "worker_status": "not_running",
+        "memory_enabled": True,
+        "degraded": True,
+    }
+    try:
+        platform_svc = getattr(app_state, "platform", None) or getattr(getattr(app_state, "engine", None), "platform", None)
+        if platform_svc is None:
+            return base
+        base["worker_status"] = platform_svc.unified_os.worker.status()["status"]
+        base["memory_enabled"] = bool(platform_svc.memory.is_enabled())
+        base["desktop_session"] = platform_svc.desktop_control.inspect_session().display_server
+        base["degraded"] = False
+    except Exception:
+        base["degraded"] = True
+    return base
+
+
 def create_app(
     settings: Settings | None = None,
     provider: Any | None = None,
@@ -525,6 +561,7 @@ def create_app(
     ai_provider = IntelligenceOrchestrator(model_manager, settings, database)
     autonomy_policy = AutonomyPolicy(settings, database, registry)
     engine = TaskEngine(database, ai_provider, registry, settings, autonomy_policy)
+    engine.platform.unified_os.model_manager = model_manager
     # Create storage roots eagerly rather than only in `lifespan`: the app must also
     # work when it is mounted or exercised without a startup event (test clients,
     # sub-applications), which previously surfaced as an opaque HTTP 500.
@@ -684,6 +721,7 @@ def create_app(
             "cognition": _cognition_health(app.state),
             "platform": _platform_health(app.state),
             "creation": _creation_health(app.state),
+            "unified_os": _unified_os_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -1686,6 +1724,52 @@ def create_app(
                 "max_parallel_tasks": settings.max_parallel_tasks,
             },
         }
+
+    @app.get("/api/os/manifest")
+    async def os_manifest() -> dict[str, Any]:
+        return engine.platform.unified_os.architecture_manifest()
+
+    @app.get("/api/os/memory")
+    async def os_memory_inspect(category: str = "", query: str = "", limit: int = 50) -> dict[str, Any]:
+        if query.strip():
+            return engine.platform.memory.retrieve_relevant_context(query.strip(), limit=min(max(1, limit), 25))
+        return engine.platform.memory.inspect_memories(category=category, limit=min(max(1, limit), 200))
+
+    @app.post("/api/os/memory")
+    async def os_memory_store(payload: MemoryStoreRequest) -> dict[str, Any]:
+        try:
+            return engine.platform.memory.store(
+                category=payload.category,
+                subject=payload.subject,
+                content=payload.content,
+                provenance=payload.provenance,
+                project_id=payload.project_id,
+                evidence_verified=payload.evidence_verified,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/os/memory/{entry_id}")
+    async def os_memory_delete(entry_id: str) -> dict[str, bool]:
+        if not engine.platform.memory.delete_memory(entry_id):
+            raise HTTPException(status_code=404, detail="Memory entry not found.")
+        return {"deleted": True}
+
+    @app.get("/api/os/worker")
+    async def os_worker_status() -> dict[str, Any]:
+        return engine.platform.unified_os.worker.status()
+
+    @app.get("/api/os/experiments")
+    async def os_improvement_experiments(limit: int = 25) -> dict[str, Any]:
+        return {"experiments": database.list_improvement_experiments(limit=min(max(1, limit), 100))}
+
+    @app.post("/api/os/pipeline")
+    async def os_unified_pipeline(payload: UnifiedPipelineRequest) -> dict[str, Any]:
+        return await engine.platform.unified_os.execute_unified_pipeline(
+            payload.prompt,
+            domain_override=payload.domain_override,
+            package=payload.package,
+        )
 
     return app
 

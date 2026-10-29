@@ -78,6 +78,15 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "native_adapter": False,
         "note": "Uses the provider's Chat Completions surface and model catalog.",
     },
+    "ollama": {
+        "label": "Ollama (Optional Local Runtime)",
+        "default_base_url": "http://127.0.0.1:11434/v1",
+        "key_env_default": "OLLAMA_API_KEY",
+        "catalog": True,
+        "native_adapter": False,
+        "local_runtime": True,
+        "note": "Optional local inference over loopback HTTP; checks host RAM before loading large models and needs no API secret on localhost.",
+    },
 }
 
 
@@ -244,6 +253,114 @@ class OpenAICompatibleAdapter(_HTTPAdapter):
 
 class OpenAIAdapter(OpenAICompatibleAdapter):
     token_parameter = "max_completion_tokens"
+
+
+def check_local_model_resource_fit(model_id: str, available_ram_mb: int | None = None) -> dict[str, Any]:
+    """§18 Estimate quantized RAM requirement for a local model and guard low-spec (~10 GB) machines."""
+    if available_ram_mb is None:
+        available_ram_mb = 8192
+        try:
+            with open("/proc/meminfo", encoding="utf-8") as memf:
+                for ln in memf:
+                    if ln.startswith("MemAvailable:"):
+                        available_ram_mb = max(256, int(ln.split()[1]) // 1024)
+                        break
+        except OSError:
+            pass
+
+    match = re.search(r"(\d+(?:\.\d+)?)\s*[bB]\b", model_id or "")
+    params_b = float(match.group(1)) if match else 3.0
+    # ~0.7 GB per billion parameters (Q4_K_M weights + KV cache + runtime overhead)
+    estimated_ram_mb = int(params_b * 700 + 512)
+    safe_ceiling_mb = int(available_ram_mb * 0.85)
+    fits = estimated_ram_mb <= safe_ceiling_mb
+    return {
+        "model_id": model_id,
+        "estimated_parameters_b": params_b,
+        "estimated_ram_mb": estimated_ram_mb,
+        "available_ram_mb": available_ram_mb,
+        "fits_resource_budget": fits,
+        "reason": (
+            "Fits local memory budget."
+            if fits
+            else f"Model '{model_id}' (~{estimated_ram_mb} MB est.) exceeds safe local RAM ceiling ({safe_ceiling_mb} MB available)."
+        ),
+    }
+
+
+class OllamaAdapter(OpenAICompatibleAdapter):
+    """§18 Optional local inference adapter for Ollama over loopback HTTP with RAM safety checks."""
+
+    def __init__(self, timeout_seconds: int, allow_local_http: bool = True):
+        super().__init__(timeout_seconds, allow_local_http=True)
+
+    def _base(self, base_url: str) -> str:
+        hostname = (urllib.parse.urlsplit(base_url.strip()).hostname or "").lower()
+        is_loopback = hostname in {"localhost", "127.0.0.1", "::1"}
+        return validate_base_url(base_url, allow_local_http=(is_loopback or self.allow_local_http))
+
+    async def _credential(self, api_key_env: str) -> str:
+        # Local loopback Ollama does not require a cloud API secret.
+        if not api_key_env:
+            return ""
+        return os.getenv(api_key_env, "").strip()
+
+    async def chat(
+        self,
+        *,
+        api_key_env: str,
+        base_url: str,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        max_output_tokens: int,
+    ) -> dict[str, Any]:
+        fit = check_local_model_resource_fit(model_id)
+        if not fit["fits_resource_budget"] and os.getenv("NOVA_FORCE_LARGE_LOCAL_MODEL", "").lower() not in {"1", "true"}:
+            raise ProviderConfigurationError(fit["reason"])
+        key = await self._credential(api_key_env)
+        base = self._base(base_url)
+        payload: dict[str, Any] = {"model": model_id, "messages": messages, self.token_parameter: max_output_tokens}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        body = await self._request("POST", f"{base}/chat/completions", headers=headers, json_body=payload)
+        try:
+            message = body["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ProviderError("Local Ollama response did not contain a Chat Completions message.") from exc
+        if not isinstance(message, dict):
+            raise ProviderError("Local Ollama returned an invalid message.")
+        usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+        return {
+            "message": message,
+            "usage": {
+                "prompt_tokens": _safe_int(usage.get("prompt_tokens")),
+                "completion_tokens": _safe_int(usage.get("completion_tokens")),
+                "total_tokens": _safe_int(usage.get("total_tokens")),
+            },
+        }
+
+    async def list_models(self, *, api_key_env: str, base_url: str) -> ModelCatalog:
+        key = await self._credential(api_key_env)
+        headers = {"Accept": "application/json"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        body = await self._request("GET", f"{self._base(base_url)}/models", headers=headers)
+        models = body.get("data", [])
+        if not isinstance(models, list):
+            raise ProviderError("Local Ollama model catalog response has an unsupported shape.")
+        return ModelCatalog(
+            [
+                {"id": str(item.get("id", "")), "display_name": str(item.get("name", item.get("id", ""))), "capabilities": ["chat"]}
+                for item in models
+                if isinstance(item, dict) and item.get("id")
+            ],
+            complete=True,
+        )
 
 
 class AnthropicAdapter(_HTTPAdapter):
@@ -469,6 +586,7 @@ _ADAPTERS = {
     "xai": OpenAICompatibleAdapter,
     "deepseek": OpenAICompatibleAdapter,
     "mistral": OpenAICompatibleAdapter,
+    "ollama": OllamaAdapter,
     "anthropic": AnthropicAdapter,
     "gemini": GeminiAdapter,
 }

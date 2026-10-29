@@ -19,6 +19,10 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="action")
     subparsers.add_parser("desktop", help="Open the native desktop window (default)")
     subparsers.add_parser("diagnostics", help="Print local setup diagnostics as JSON")
+    subparsers.add_parser("setup", help="Run non-root Kali Linux environment & capability verification")
+    worker = subparsers.add_parser("worker", help="Run optional user-level background goal/task worker")
+    worker.add_argument("--once", action="store_true", help="Run one scheduled-goal check tick and exit")
+    worker.add_argument("--poll-seconds", type=int, default=15, help="Polling interval in seconds (5–300)")
     run = subparsers.add_parser("exec", help="Run one local command under the current user's permissions")
     run.add_argument("--cwd", default=None, help="Working directory (default: selected workspace)")
     run.add_argument("--timeout", type=int, default=120, help="Timeout in seconds (1–600)")
@@ -93,6 +97,32 @@ def _run_cli(args: argparse.Namespace) -> int:
         runtime.close()
 
 
+def _run_worker(once: bool, poll_seconds: int) -> int:
+    import time
+
+    runtime = DesktopRuntime()
+    sup = runtime.platform.unified_os.worker
+    interval = max(5, min(int(poll_seconds), 300))
+    try:
+        while True:
+            tick = sup.tick_once("nova-x-cli-worker")
+            for due in tick["dispatched_tasks"]:
+                fut = runtime.async_service.submit(runtime.engine.run_task(due["task_id"]))
+                fut.result(timeout=180)
+            if once:
+                print(json.dumps(tick, indent=2, default=str))
+                return 0
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        try:
+            sup.mark_stopped("nova-x-cli-worker")
+        except Exception:
+            pass
+        runtime.close()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -103,6 +133,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         finally:
             runtime.close()
+    if args.action == "setup":
+        runtime = DesktopRuntime()
+        try:
+            diag = runtime.diagnostics()
+            print(
+                json.dumps(
+                    {
+                        "app": f"NOVA X {__version__}",
+                        "root_required": False,
+                        "running_as_root": bool(hasattr(os, "geteuid") and os.geteuid() == 0),
+                        "checks": diag["checks"],
+                        "architecture": diag["architecture"],
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                    default=str,
+                )
+            )
+            return 0
+        finally:
+            runtime.close()
+    if args.action == "worker":
+        return _run_worker(bool(args.once), int(args.poll_seconds))
     if args.action == "exec":
         if not 1 <= args.timeout <= 600:
             parser.error("--timeout must be between 1 and 600 seconds")

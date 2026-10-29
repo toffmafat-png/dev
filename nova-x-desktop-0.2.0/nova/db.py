@@ -419,6 +419,48 @@ class Database:
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_creation_runs_created ON creation_runs(created_at);
+                CREATE TABLE IF NOT EXISTS memory_entries (
+                    id TEXT PRIMARY KEY,
+                    category TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    provenance TEXT NOT NULL DEFAULT 'user_stated',
+                    verified_fact INTEGER NOT NULL DEFAULT 0,
+                    source_ref TEXT NOT NULL DEFAULT '',
+                    project_id TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_entries_cat ON memory_entries(category, updated_at);
+                CREATE TABLE IF NOT EXISTS improvement_experiments (
+                    id TEXT PRIMARY KEY,
+                    mechanism TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    hypothesis TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    safety_passed INTEGER NOT NULL DEFAULT 0,
+                    tests_passed INTEGER NOT NULL DEFAULT 0,
+                    baseline_score REAL NOT NULL DEFAULT 0,
+                    candidate_score REAL NOT NULL DEFAULT 0,
+                    applied INTEGER NOT NULL DEFAULT 0,
+                    staging_dir TEXT NOT NULL DEFAULT '',
+                    backup_dir TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_improvement_experiments_updated ON improvement_experiments(updated_at);
+                CREATE TABLE IF NOT EXISTS worker_heartbeats (
+                    worker_id TEXT PRIMARY KEY,
+                    pid INTEGER NOT NULL DEFAULT 0,
+                    mode TEXT NOT NULL DEFAULT 'user_worker',
+                    status TEXT NOT NULL DEFAULT 'stopped',
+                    dispatched_count INTEGER NOT NULL DEFAULT 0,
+                    detail TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -1872,3 +1914,213 @@ class Database:
                 except sqlite3.Error:
                     counts[table] = 0
         return counts
+
+    # ---------------- §14, §16 & §17 Unified Memory, Improvement & Worker CRUD
+
+    def save_memory_entry(self, record: dict[str, Any]) -> dict[str, Any]:
+        entry_id = str(record.get("id") or uuid.uuid4())
+        now = utc_now()
+        created = str(record.get("created_at") or now)
+        updated = str(record.get("updated_at") or now)
+        row_data = {
+            "id": entry_id,
+            "category": str(record["category"]).strip()[:64],
+            "subject": str(record["subject"]).strip()[:200],
+            "content": str(record["content"]).strip()[:16_000],
+            "provenance": str(record.get("provenance") or "user_stated")[:48],
+            "verified_fact": int(bool(record.get("verified_fact", False))),
+            "source_ref": str(record.get("source_ref") or "")[:300],
+            "project_id": str(record.get("project_id") or "")[:64],
+            "metadata_json": _dump(record.get("metadata") or {}),
+            "created_at": created,
+            "updated_at": updated,
+        }
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO memory_entries (
+                    id, category, subject, content, provenance, verified_fact,
+                    source_ref, project_id, metadata_json, created_at, updated_at
+                ) VALUES (
+                    :id, :category, :subject, :content, :provenance, :verified_fact,
+                    :source_ref, :project_id, :metadata_json, :created_at, :updated_at
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    category=excluded.category,
+                    subject=excluded.subject,
+                    content=excluded.content,
+                    provenance=excluded.provenance,
+                    verified_fact=excluded.verified_fact,
+                    source_ref=excluded.source_ref,
+                    project_id=excluded.project_id,
+                    metadata_json=excluded.metadata_json,
+                    updated_at=excluded.updated_at
+                """,
+                row_data,
+            )
+        return self.get_memory_entry(entry_id) or row_data
+
+    def get_memory_entry(self, entry_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM memory_entries WHERE id = ?", (entry_id,)).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["verified_fact"] = bool(item["verified_fact"])
+        item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        return item
+
+    def list_memory_entries(self, *, category: str = "", query: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        if query:
+            clauses.append("(LOWER(subject) LIKE ? OR LOWER(content) LIKE ?)")
+            pat = f"%{query.lower()}%"
+            params.extend([pat, pat])
+        sql = "SELECT * FROM memory_entries"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["verified_fact"] = bool(item["verified_fact"])
+            item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+            out.append(item)
+        return out
+
+    def delete_memory_entry(self, entry_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute("DELETE FROM memory_entries WHERE id = ?", (entry_id,))
+            return cur.rowcount > 0
+
+    def prune_memory_category(self, category: str, keep_limit: int) -> int:
+        cap = max(1, int(keep_limit))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id FROM memory_entries WHERE category = ? ORDER BY updated_at DESC",
+                (category,),
+            ).fetchall()
+            excess = [r["id"] for r in rows[cap:]]
+            if not excess:
+                return 0
+            placeholders = ",".join("?" for _ in excess)
+            cur = conn.execute(f"DELETE FROM memory_entries WHERE id IN ({placeholders})", excess)
+            return int(cur.rowcount)
+
+    def save_improvement_experiment(self, record: dict[str, Any]) -> dict[str, Any]:
+        exp_id = str(record.get("id") or uuid.uuid4())
+        now = utc_now()
+        row_data = {
+            "id": exp_id,
+            "mechanism": str(record["mechanism"]).strip()[:64],
+            "title": str(record["title"]).strip()[:180],
+            "hypothesis": str(record["hypothesis"]).strip()[:2000],
+            "status": str(record.get("status") or "evaluated")[:32],
+            "safety_passed": int(bool(record.get("safety_passed", False))),
+            "tests_passed": int(bool(record.get("tests_passed", False))),
+            "baseline_score": float(record.get("baseline_score") or 0.0),
+            "candidate_score": float(record.get("candidate_score") or 0.0),
+            "applied": int(bool(record.get("applied", False))),
+            "staging_dir": str(record.get("staging_dir") or "")[:500],
+            "backup_dir": str(record.get("backup_dir") or "")[:500],
+            "payload_json": _dump(record.get("payload") or {}),
+            "created_at": str(record.get("created_at") or now),
+            "updated_at": now,
+        }
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO improvement_experiments (
+                    id, mechanism, title, hypothesis, status, safety_passed, tests_passed,
+                    baseline_score, candidate_score, applied, staging_dir, backup_dir,
+                    payload_json, created_at, updated_at
+                ) VALUES (
+                    :id, :mechanism, :title, :hypothesis, :status, :safety_passed, :tests_passed,
+                    :baseline_score, :candidate_score, :applied, :staging_dir, :backup_dir,
+                    :payload_json, :created_at, :updated_at
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    status=excluded.status,
+                    safety_passed=excluded.safety_passed,
+                    tests_passed=excluded.tests_passed,
+                    baseline_score=excluded.baseline_score,
+                    candidate_score=excluded.candidate_score,
+                    applied=excluded.applied,
+                    backup_dir=excluded.backup_dir,
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at
+                """,
+                row_data,
+            )
+        return self.get_improvement_experiment(exp_id) or row_data
+
+    def get_improvement_experiment(self, exp_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM improvement_experiments WHERE id = ?", (exp_id,)).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["safety_passed"] = bool(item["safety_passed"])
+        item["tests_passed"] = bool(item["tests_passed"])
+        item["applied"] = bool(item["applied"])
+        item["payload"] = json.loads(item.pop("payload_json") or "{}")
+        return item
+
+    def list_improvement_experiments(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM improvement_experiments ORDER BY updated_at DESC LIMIT ?",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["safety_passed"] = bool(item["safety_passed"])
+            item["tests_passed"] = bool(item["tests_passed"])
+            item["applied"] = bool(item["applied"])
+            item["payload"] = json.loads(item.pop("payload_json") or "{}")
+            out.append(item)
+        return out
+
+    def upsert_worker_heartbeat(
+        self,
+        worker_id: str,
+        *,
+        pid: int,
+        mode: str = "user_worker",
+        status: str = "running",
+        dispatched_count: int = 0,
+        detail: str = "",
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            existing = conn.execute("SELECT started_at FROM worker_heartbeats WHERE worker_id = ?", (worker_id,)).fetchone()
+            started = existing["started_at"] if existing else now
+            conn.execute(
+                """
+                INSERT INTO worker_heartbeats (worker_id, pid, mode, status, dispatched_count, detail, started_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(worker_id) DO UPDATE SET
+                    pid=excluded.pid,
+                    mode=excluded.mode,
+                    status=excluded.status,
+                    dispatched_count=excluded.dispatched_count,
+                    detail=excluded.detail,
+                    updated_at=excluded.updated_at
+                """,
+                (worker_id[:64], int(pid), mode[:40], status[:32], int(dispatched_count), detail[:400], started, now),
+            )
+            row = conn.execute("SELECT * FROM worker_heartbeats WHERE worker_id = ?", (worker_id[:64],)).fetchone()
+        return dict(row) if row else {}
+
+    def list_worker_heartbeats(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM worker_heartbeats ORDER BY updated_at DESC").fetchall()
+        return [dict(r) for r in rows]

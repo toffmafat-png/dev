@@ -147,6 +147,7 @@ class TaskEngine:
             tools=tools,
             autonomy_policy=self.autonomy_policy,
         )
+        self.platform.unified_os.cognition = self.cognition
 
     def launch(self, task_id: str) -> None:
         job = self._jobs.get(task_id)

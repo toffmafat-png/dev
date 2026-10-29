@@ -18,7 +18,9 @@ Contents:
   docs/ROADMAP.md
   docs/SECURITY.md
   docs/TESTING.md
+  docs/UNIFIED_OS.md
   nova/__init__.py
+  nova/acceptance.py
   nova/autonomy.py
   nova/capabilities.py
   nova/cognition/__init__.py
@@ -52,6 +54,7 @@ Contents:
   nova/desktop/policy.py
   nova/desktop/runtime.py
   nova/desktop/secrets.py
+  nova/desktop_control.py
   nova/devtools.py
   nova/engine.py
   nova/events.py
@@ -60,6 +63,7 @@ Contents:
   nova/knowledge.py
   nova/main.py
   nova/mcp_client.py
+  nova/memory_hub.py
   nova/modalities.py
   nova/model_providers.py
   nova/observability.py
@@ -69,6 +73,7 @@ Contents:
   nova/resources.py
   nova/sandbox.py
   nova/sandbox_child.py
+  nova/self_improvement.py
   nova/terminal.py
   nova/tools/__init__.py
   nova/tools/calculator.py
@@ -76,16 +81,21 @@ Contents:
   nova/tools/registry.py
   nova/tools/research.py
   nova/tools/workspace.py
+  nova/unified_os.py
   nova/updates.py
   nova/workflows.py
+  packaging/config.example.env
   packaging/debian/README.Debian
   packaging/debian/control
+  packaging/debian/nova-x-worker.service
   packaging/debian/nova-x.desktop
   packaging/debian/nova-x.svg
   pyproject.toml
   requirements-dev.txt
   requirements.txt
   scripts/build_deb.sh
+  scripts/install_user.sh
+  scripts/uninstall_user.sh
   static/app.js
   static/index.html
   static/styles.css
@@ -93,10 +103,10 @@ Contents:
   tests/conftest.py
   tests/test_api.py
   tests/test_autonomy.py
-  tests/test_config.py
-  tests/test_controls.py
   tests/test_cognition.py
   tests/test_cognition_api.py
+  tests/test_config.py
+  tests/test_controls.py
   tests/test_creation_engine.py
   tests/test_desktop.py
   tests/test_desktop_ui.py
@@ -109,9 +119,10 @@ Contents:
   tests/test_provider.py
   tests/test_regressions.py
   tests/test_tools.py
+  tests/test_unified_os_acceptance.py
 
 Excluded: generated caches, local databases/workspaces, credentials, and built release binaries.
-Build instructions: README.md and docs/NATIVE_DESKTOP.md.
+Build instructions: README.md, docs/NATIVE_DESKTOP.md, and docs/UNIFIED_OS.md.
 
 Notes:
   * The cognition layer (§70–§89) lives in nova/cognition/ and is documented in
@@ -129,6 +140,13 @@ Notes:
     nova/desktop/app.py), documented in docs/CREATION_ENGINE.md and verified by
     `python -m nova.creation` (`nova-uce-v1`, 8 end-to-end cases) and
     tests/test_creation_engine.py.
+  * The §1–§27 Unified Universal AI Operating System is unified by
+    nova/unified_os.py, nova/memory_hub.py, nova/desktop_control.py,
+    nova/self_improvement.py, optional local Ollama support in
+    nova/model_providers.py, the 10-page native Qt Control Center in
+    nova/desktop/app.py, and the 18-check acceptance suite in nova/acceptance.py
+    (`python -m nova.acceptance` and tests/test_unified_os_acceptance.py),
+    documented in docs/UNIFIED_OS.md.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).

@@ -45,11 +45,12 @@ def test_native_qt_window_builds_all_staged_pages(qapp, tmp_path, monkeypatch):
     try:
         window.show()
         qapp.processEvents()
-        assert len(window.pages) == 9
-        assert window.stack.count() == 9
+        assert len(window.pages) == 10
+        assert window.stack.count() == 10
         assert set(window.pages) == {
             "chat",
             "studio",
+            "control_center",
             "tasks",
             "commands",
             "history",
@@ -61,6 +62,13 @@ def test_native_qt_window_builds_all_staged_pages(qapp, tmp_path, monkeypatch):
         assert window.emergency_button.isVisible()
         assert window.pages["commands"] is not None
         assert window.pages["studio"] is not None
+        assert window.pages["control_center"] is not None
+
+        # Switch to §22 Unified OS Control Center and verify real backend state.
+        window._show_page("control_center")
+        qapp.processEvents()
+        assert "12 Unified Modules Active" in window.cc_system_box.toPlainText()
+        assert "NOT_RUNNING" in window.cc_worker_pill.text() or "RUNNING" in window.cc_worker_pill.text()
 
         # Switch to the §146 Creation studio page and verify real recognition & non-fabricated state.
         window._show_page("studio")

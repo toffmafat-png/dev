@@ -1,0 +1,16 @@
+[Unit]
+Description=NOVA X Optional User-Level Scheduled Goal & Workflow Worker
+Documentation=file:///usr/share/doc/nova-x-desktop/UNIFIED_OS.md
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/nova-x worker --poll-seconds 30
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+Environment=NOVA_DESKTOP_MODE=1
+
+[Install]
+WantedBy=default.target
