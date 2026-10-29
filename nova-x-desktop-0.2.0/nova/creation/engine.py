@@ -542,7 +542,9 @@ assert out["headings"][0]["title"] == "Intro"
         (pdir / "evaluation" / "sandbox_staging.json").write_text(__import__("json").dumps(staging_result, indent=2) + "\n", encoding="utf-8")
         (pdir / "docs" / "CANDIDATE_PLUGIN.md").parent.mkdir(parents=True, exist_ok=True)
         (pdir / "docs" / "CANDIDATE_PLUGIN.md").write_text(
-            f"# {name} — Candidate Extension\n\nStaged in isolation before registration (`auto_enabled=False`).\n",
+            f"# {name} — Candidate Extension\n\n"
+            "Staged and verified inside an isolated workspace before any registration (`auto_enabled=False`). "
+            "Requires explicit operator promotion via `PluginManager.promote_candidate`.\n",
             encoding="utf-8",
         )
         return {
@@ -643,6 +645,19 @@ assert out["headings"][0]["title"] == "Intro"
             self.db.save_creation_project(proj)
         return pkg
 
+    def _convert_project_files(self, pdir: Path) -> list[dict[str, Any]]:
+        conversions: list[dict[str, Any]] = []
+        pair_map = {".md": ".pdf", ".csv": ".json", ".svg": ".png", ".obj": ".stl"}
+        for fp in sorted(pdir.rglob("*")):
+            if not fp.is_file() or ".nova_history" in fp.parts:
+                continue
+            target_ext = pair_map.get(fp.suffix.lower())
+            if target_ext:
+                out_p = pdir / "converted_exports" / f"{fp.stem}{target_ext}"
+                out_p.parent.mkdir(parents=True, exist_ok=True)
+                conversions.append(self.converter.convert(fp, out_p))
+        return conversions
+
     # ------------------------------------ §145 Universal Assistant Commands
 
     async def resolve_command(
@@ -676,6 +691,14 @@ assert out["headings"][0]["title"] == "Intro"
         if "convert" in low and source_path and target_path:
             conv = self.converter.convert(Path(source_path), Path(target_path))
             return {"command_kind": "convert_format", "conversion": conv}
+
+        if "convert" in low and project_id:
+            proj = self.db.get_creation_project(project_id)
+            if proj is None:
+                raise KeyError(f"Project '{project_id}' not found.")
+            conversions = await asyncio.to_thread(self._convert_project_files, Path(proj["project_dir"]))
+            zip_pkg = await self.package_project(project_id, archive_format="zip")
+            return {"command_kind": "convert_project_formats", "conversions": conversions, "zip_package": zip_pkg}
 
         if "compare" in low and ("previous" in low or "version" in low) and project_id:
             diff = self.workspace.lineage.compare_revisions(project_id)

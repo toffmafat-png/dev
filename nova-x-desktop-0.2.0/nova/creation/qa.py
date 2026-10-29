@@ -89,7 +89,17 @@ class QualityAssuranceEngine:
 
         # 2. Execute automated test suite when `tests/` contains test_*.py.
         test_files = [f for f in py_files if f.name.startswith("test_") or "tests" in f.relative_to(pdir).parts]
-        if test_files and domain in {"software", "web_mobile", "game", "database", "ml", "simulation", "education", "integration"}:
+        if test_files and domain in {
+            "software",
+            "web_mobile",
+            "game",
+            "database",
+            "ml",
+            "simulation",
+            "education",
+            "integration",
+            "plugin_capability",
+        }:
             py_paths: list[str] = [str(pdir), str(pdir / "src")]
             comp_root = pdir / "companion_artifacts"
             if comp_root.is_dir():

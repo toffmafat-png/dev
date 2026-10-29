@@ -200,16 +200,35 @@ async def test_all_specialized_studios_produce_verified_deliverables(environment
         package=False,
     )
     assert integ["qa"]["passed"] is True
+    assert (Path(integ["project_dir"]) / "src" / "mcp_server.py").is_file()
 
+    # Compiled C software deliverable (§118A) when host gcc is installed
+    c_proj = await creation.create_from_intent(
+        "Build a fast CLI checksum utility in C.",
+        name="Fast C Checksum",
+        domain_override="software",
+        options={"language": "c"},
+        package=False,
+    )
+    assert c_proj["qa"]["passed"] is True
+
+    # Code-to-Design + Design-to-Code bridge (§134)
+    sample_html = Path(web["project_dir"]) / "frontend" / "index.html"
     bridge = await creation.create_from_intent(
         "Extract design tokens and generate a reusable UI component.",
         name="Token Card Bridge",
         domain_override="visual_design",
-        options={"bridge_mode": True},
+        options={"bridge_mode": True, "existing_html": str(sample_html)},
         package=False,
     )
     assert bridge["qa"]["passed"] is True
     assert bridge["build_detail"]["ui_spec"]["pixel_exact_claimed"] is False
+
+    # Verify §122 3D scene/materials/optimization & §126/§128 ML/simulation artifacts
+    assert (Path(eng["project_dir"]) / "meshes" / "model.mtl").is_file()
+    assert (Path(eng["project_dir"]) / "scenes" / "camera_lighting_rig.json").is_file()
+    assert (Path(sim["project_dir"]) / "models" / "baseline_model.json").is_file()
+    assert (Path(sim["project_dir"]) / "reports" / "sensitivity_sweep.json").is_file()
 
 
 # ---- §132 Universal Format Conversion & Safe File Repair --------------------
@@ -432,6 +451,9 @@ async def test_natural_language_commands_http_api_and_desktop_studio(environment
 
         cmd_pkg = client.post("/api/creation/command", json={"command": "Package everything necessary to run this project", "project_id": pid}).json()
         assert cmd_pkg["command_kind"] == "package_project" and cmd_pkg["package"]["packaged"] is True
+
+        cmd_conv = client.post("/api/creation/command", json={"command": "Convert this project into another supported format", "project_id": pid}).json()
+        assert cmd_conv["command_kind"] == "convert_project_formats" and cmd_conv["zip_package"]["packaged"] is True
 
     # Auth gate check when NOVA_ACCESS_TOKEN is set
     secured_app = create_app(replace(settings, access_token="creation-secret-token-999"), provider=FakeProvider([]), db=db, tools=registry)

@@ -37,6 +37,7 @@ from nova.creation.media_codecs import (
     write_pcm_wav,
     write_rgba_png,
     write_srt_subtitles,
+    write_uncompressed_avi,
     write_wavefront_obj,
 )
 
@@ -262,9 +263,17 @@ def test_store_lifecycle_and_cli(tmp_path: Path, capsys) -> None:
         )
         bin_out = project_dir / "dist" / "fast_checksum"
         bin_out.parent.mkdir(parents=True, exist_ok=True)
-        proc = subprocess.run([gcc_bin, "-O2", str(c_src), "-o", str(bin_out)], capture_output=True, text=True, timeout=10, check=False)
+        proc = subprocess.run([gcc_bin, "-O2", "-Wall", "-Wextra", str(c_src), "-o", str(bin_out)], capture_output=True, text=True, timeout=10, check=False)
         if proc.returncode == 0 and bin_out.is_file():
             compiled_binary = str(bin_out.relative_to(project_dir))
+            _write(
+                project_dir / "tests" / "test_compiled_c_binary.py",
+                "import subprocess\nfrom pathlib import Path\n\n"
+                "def test_compiled_c_checksum() -> None:\n"
+                "    bin_path = Path(__file__).resolve().parent.parent / 'dist' / 'fast_checksum'\n"
+                "    out = subprocess.run([str(bin_path), 'nova-x'], capture_output=True, text=True, check=True).stdout.strip()\n"
+                "    assert out.isdigit() and int(out) > 0\n",
+            )
 
     _write(
         project_dir / "README.md",
@@ -471,6 +480,23 @@ def build_visual_design_project(
 
     palette = extract_palette_png(png_path)
     _write(project_dir / "palettes" / "palette.json", json.dumps({"dominant_colors": palette}, indent=2) + "\n")
+
+    # Batch icon sizing (16x16, 32x32, 64x64) + asset classification & metadata report (§120).
+    batch_icons: list[str] = []
+    for sz in (16, 32, 64):
+        icon_p = write_rgba_png(project_dir / "renders" / "batch" / f"icon_{sz}.png", sz, sz, resize_rgba(w, h, rgba, sz, sz))
+        batch_icons.append(str(icon_p.relative_to(project_dir)))
+
+    png_meta = inspect_png(png_path)
+    classification_report = {
+        "assets": [
+            {"path": "sources/brand_identity.svg", "category": "vector_source", "editable": True},
+            {"path": "renders/brand_identity.png", "category": "raster_master", "metadata": png_meta},
+            {"path": "renders/brand_identity_transparent_variant.png", "category": "cutout_variant", "metadata": inspect_png(variant_path)},
+            *[{"path": rel, "category": "batch_icon"} for rel in batch_icons],
+        ]
+    }
+    _write(project_dir / "palettes" / "asset_classification.json", json.dumps(classification_report, indent=2) + "\n")
     _write(
         project_dir / "docs" / "BRAND_GUIDE.md",
         f"# {name} — Visual Design & Asset Kit\n\n- Editable vector preserved at `sources/brand_identity.svg`.\n"
@@ -564,6 +590,30 @@ def build_media_video_project(
     )
     shutil.copy2(frame_pngs[0], project_dir / "renders" / "thumbnail.png")
 
+    # Video trimming (first 2 frames = 1.0s) & resolution conversion (160x90) + export settings (§121).
+    trimmed_scaled_frames: list[Path] = []
+    for idx_t, src_frame in enumerate(frame_pngs[:2], start=1):
+        fw, fh, frgba = read_rgba_png(src_frame)
+        tp = write_rgba_png(project_dir / "frames" / f"trimmed_160x90_{idx_t:02d}.png", 160, 90, resize_rgba(fw, fh, frgba, 160, 90))
+        trimmed_scaled_frames.append(tp)
+    trimmed_avi = project_dir / "renders" / "trimmed_preview_160x90.avi"
+    write_uncompressed_avi(trimmed_avi, trimmed_scaled_frames, fps=2)
+    _write(
+        project_dir / "renders" / "export_settings.json",
+        json.dumps(
+            {
+                "master_resolution": "320x180",
+                "trimmed_resolution": "160x90",
+                "fps": 2,
+                "trimmed_duration_s": 1.0,
+                "audio_sync_wav": "audio/narration_bed.wav",
+                "subtitles_srt": "subtitles/captions.srt",
+            },
+            indent=2,
+        )
+        + "\n",
+    )
+
     vid_rel = str(Path(assembled["video_path"]).relative_to(project_dir))
     limitations = [
         "Footage is automated procedural asset assembly, not neural/cinematic AI video synthesis (§121).",
@@ -649,8 +699,42 @@ def build_3d_project(
     stl_report = inspect_mesh(stl_path)
     obj_report = inspect_mesh(obj_path)
     _write(
+        project_dir / "meshes" / "model.mtl",
+        "# Wavefront PBR-compatible material library (§122)\n"
+        "newmtl anodized_teal\nKa 0.08 0.14 0.22\nKd 0.22 0.84 0.77\nKs 0.35 0.35 0.35\nNs 64.0\nd 1.0\n",
+    )
+    _write(
+        project_dir / "scenes" / "camera_lighting_rig.json",
+        json.dumps(
+            {
+                "camera": {"projection": "orthographic_isometric", "position_mm": [120.0, -120.0, 95.0], "target_mm": [0.0, 0.0, h_mm / 2.0]},
+                "lighting": [
+                    {"name": "key_light", "type": "directional", "intensity": 1.2, "direction": [-0.5, 0.6, -0.8]},
+                    {"name": "fill_light", "type": "hemisphere", "intensity": 0.45},
+                ],
+                "turntable_rig_keyframes": [{"frame": 0, "yaw_deg": 0.0}, {"frame": 30, "yaw_deg": 180.0}, {"frame": 60, "yaw_deg": 360.0}],
+            },
+            indent=2,
+        )
+        + "\n",
+    )
+    unique_welded = len({(round(v[0], 4), round(v[1], 4), round(v[2], 4)) for v in verts})
+    _write(
         project_dir / "validation" / "mesh_validation.json",
-        json.dumps({"tool_used": tool_used, "stl": stl_report, "obj": obj_report}, indent=2) + "\n",
+        json.dumps(
+            {
+                "tool_used": tool_used,
+                "stl": stl_report,
+                "obj": obj_report,
+                "optimization": {
+                    "raw_stl_triangle_vertices": len(faces) * 3,
+                    "indexed_welded_vertices": unique_welded,
+                    "vertex_reduction_ratio": round(1.0 - (unique_welded / max(1, len(faces) * 3)), 4),
+                },
+            },
+            indent=2,
+        )
+        + "\n",
     )
     _write(
         project_dir / "docs" / "FABRICATION_NOTES.md",
@@ -1048,6 +1132,65 @@ def build_data_ml_or_simulation_project(
     out_folder.mkdir(parents=True, exist_ok=True)
     metrics_path = _write(out_folder / "metrics.json", json.dumps(metrics, indent=2) + "\n")
 
+    # Serialized baseline model, inference helper, error analysis & sensitivity sweep (§126 & §128).
+    serialized_model = {
+        "model_family": "ordinary_least_squares_linear",
+        "feature": x_col,
+        "target": y_col,
+        "slope": round(slope, 8),
+        "intercept": round(intercept, 8),
+        "seed": seed,
+        "train_samples": len(rows) - len(te_y),
+    }
+    model_path = _write(project_dir / "models" / "baseline_model.json", json.dumps(serialized_model, indent=2) + "\n")
+    infer_script = _write(
+        project_dir / "models" / "predict_cli.py",
+        '"""Lightweight local inference helper for serialized baseline model (§126)."""\n'
+        "from __future__ import annotations\nimport json, sys\nfrom pathlib import Path\n\n"
+        "def predict(x_value: float, model_file: Path | None = None) -> float:\n"
+        "    mf = Path(model_file) if model_file else (Path(__file__).resolve().parent / 'baseline_model.json')\n"
+        "    m = json.loads(mf.read_text(encoding='utf-8'))\n"
+        "    return float(m['slope']) * float(x_value) + float(m['intercept'])\n\n"
+        "if __name__ == '__main__':\n"
+        "    val = float(sys.argv[1]) if len(sys.argv) > 1 else 5.0\n"
+        "    print(json.dumps({'x': val, 'prediction': round(predict(val), 5)}))\n",
+    )
+    abs_errors = sorted(abs((slope * x + intercept) - y) for x, y in zip(xs[-len(te_y) :], te_y, strict=False))
+    _write(
+        out_folder / "error_analysis.json",
+        json.dumps(
+            {
+                "holdout_count": len(abs_errors),
+                "max_abs_error": round(max(abs_errors, default=0.0), 5),
+                "median_abs_error": round(statistics.median(abs_errors) if abs_errors else 0.0, 5),
+            },
+            indent=2,
+        )
+        + "\n",
+    )
+    _write(
+        out_folder / "sensitivity_sweep.json",
+        json.dumps(
+            {
+                "parameter_swept": "slope_perturbation_factor",
+                "runs": [
+                    {
+                        "factor": fac,
+                        "rmse": round(
+                            math.sqrt(
+                                statistics.fmean(((slope * fac * x + intercept) - y) ** 2 for x, y in zip(xs[-len(te_y) :], te_y, strict=False))
+                            ),
+                            5,
+                        ),
+                    }
+                    for fac in (0.9, 1.0, 1.1)
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+    )
+
     # Visualization chart (SVG + PNG)
     bucket_labels = [f"Q{i + 1}" for i in range(4)]
     chunk = max(1, len(ys) // 4)
@@ -1089,7 +1232,10 @@ if __name__ == "__main__":
         "    root = Path(__file__).resolve().parent.parent\n"
         f"    proc = subprocess.run([sys.executable, str(root / '{repro_script.relative_to(project_dir)}')], capture_output=True, text=True, check=True)\n"
         "    data = json.loads(proc.stdout)\n"
-        f"    assert data['rows'] == {len(rows)}\n",
+        f"    assert data['rows'] == {len(rows)}\n"
+        f"    pred = subprocess.run([sys.executable, str(root / '{infer_script.relative_to(project_dir)}'), '4.0'], capture_output=True, text=True, check=True)\n"
+        "    assert 'prediction' in json.loads(pred.stdout)\n"
+        f"    assert (root / '{model_path.relative_to(project_dir)}').is_file()\n",
     )
 
     _write(
@@ -1286,15 +1432,33 @@ def transform_event(raw_json: str) -> dict[str, Any]:
 ''',
     )
     _write(
+        project_dir / "src" / "mcp_server.py",
+        '"""Minimal JSON-RPC 2.0 MCP stdio tool server (§133)."""\n'
+        "from __future__ import annotations\nimport json\nfrom typing import Any\nfrom src.connector import transform_event\n\n"
+        "def handle_jsonrpc(req: dict[str, Any]) -> dict[str, Any]:\n"
+        "    rid = req.get('id')\n"
+        "    method = req.get('method', '')\n"
+        "    if method == 'tools/list':\n"
+        "        return {'jsonrpc': '2.0', 'id': rid, 'result': {'tools': [{'name': 'normalize_webhook', 'inputSchema': {'type': 'object'}}]}}\n"
+        "    if method == 'tools/call':\n"
+        "        args = (req.get('params') or {}).get('arguments') or {}\n"
+        "        return {'jsonrpc': '2.0', 'id': rid, 'result': transform_event(json.dumps(args))}\n"
+        "    return {'jsonrpc': '2.0', 'id': rid, 'error': {'code': -32601, 'message': 'Method not found'}}\n",
+    )
+    _write(
         project_dir / "tests" / "test_connector.py",
-        "import hashlib, hmac\nfrom src.connector import transform_event, verify_webhook_signature\n\n"
-        "def test_hmac_and_transform() -> None:\n"
+        "import hashlib, hmac\nfrom src.connector import transform_event, verify_webhook_signature\nfrom src.mcp_server import handle_jsonrpc\n\n"
+        "def test_hmac_transform_and_mcp_jsonrpc() -> None:\n"
         "    body = b'{\"id\": \"evt_1\", \"type\": \"sync.completed\"}'\n"
         "    sig = hmac.new(b'unit-test-key', body, hashlib.sha256).hexdigest()\n"
         "    assert verify_webhook_signature(body, sig, 'unit-test-key') is True\n"
         "    assert verify_webhook_signature(body, '00' * 32, 'unit-test-key') is False\n"
         "    out = transform_event(body.decode())\n"
-        "    assert out == {'event_id': 'evt_1', 'kind': 'sync.completed', 'normalized': True}\n",
+        "    assert out == {'event_id': 'evt_1', 'kind': 'sync.completed', 'normalized': True}\n"
+        "    listed = handle_jsonrpc({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})\n"
+        "    assert listed['result']['tools'][0]['name'] == 'normalize_webhook'\n"
+        "    called = handle_jsonrpc({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'arguments': {'id': 'e2', 'type': 'ping'}}})\n"
+        "    assert called['result']['event_id'] == 'e2'\n",
     )
     _write(project_dir / "docs" / "INTEGRATION.md", f"# {name}\n\n{objective}\n\nSecrets use `.env.example` placeholders only.\n")
     return {
@@ -1315,17 +1479,24 @@ def build_design_code_bridge(
     """§134 Bidirectional Design-to-Code and Code-to-Design workspace."""
     palette = [{"hex": "#0e1729", "share": 0.7}, {"hex": "#38d6c5", "share": 0.2}, {"hex": "#f8fafc", "share": 0.1}]
     mode = "spec_to_component"
+    discovered_components = ["HeaderBar", "ActionCard", "StatusBadge"]
     if reference_image is not None and Path(reference_image).is_file() and Path(reference_image).suffix.lower() == ".png":
         palette = extract_palette_png(Path(reference_image)) or palette
         mode = "design_to_code"
     elif existing_html is not None and Path(existing_html).is_file():
         mode = "code_to_design"
+        html_src = Path(existing_html).read_text(encoding="utf-8", errors="replace")
+        import re as _re
+
+        tags = sorted({m.lower() for m in _re.findall(r"<(header|nav|main|section|article|button|form|footer)\b", html_src, _re.I)})
+        if tags:
+            discovered_components = [f"<{t}>" for t in tags]
 
     ui_spec = {
         "name": name,
         "bridge_mode": mode,
         "extracted_palette": palette,
-        "components": ["HeaderBar", "ActionCard", "StatusBadge"],
+        "components": discovered_components,
         "pixel_exact_claimed": False,
         "note": "Layout tokens and component hierarchy extracted deterministically; exact pixel identity is never claimed without a live browser render diff (§134).",
     }
