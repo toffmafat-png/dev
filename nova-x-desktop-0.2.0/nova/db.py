@@ -1120,6 +1120,111 @@ class Database:
                     provenance_report_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS gi_cognitive_contexts (
+                    context_id TEXT PRIMARY KEY,
+                    state_version INTEGER NOT NULL DEFAULT 1,
+                    active_objective TEXT NOT NULL DEFAULT '',
+                    subsystem_states_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS gi_multilayer_memories (
+                    id TEXT PRIMARY KEY,
+                    layer TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    attribute_key TEXT NOT NULL DEFAULT '',
+                    content TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL DEFAULT '',
+                    claim_origin TEXT NOT NULL DEFAULT 'direct_user_statement',
+                    verification_mode TEXT NOT NULL DEFAULT 'source_reported',
+                    evidence_status TEXT NOT NULL DEFAULT 'Untested',
+                    confidence_score REAL NOT NULL DEFAULT 0.5,
+                    source_ref TEXT NOT NULL DEFAULT '',
+                    related_concepts_json TEXT NOT NULL DEFAULT '[]',
+                    relevant_projects_json TEXT NOT NULL DEFAULT '[]',
+                    review_or_expiration_at TEXT NOT NULL DEFAULT '',
+                    correction_history_json TEXT NOT NULL DEFAULT '[]',
+                    superseded_by TEXT NOT NULL DEFAULT '',
+                    forgotten INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    last_verified_at TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_gi_mem_layer_subj ON gi_multilayer_memories(layer, subject, forgotten);
+                CREATE INDEX IF NOT EXISTS idx_gi_mem_fp ON gi_multilayer_memories(fingerprint);
+                CREATE TABLE IF NOT EXISTS gi_world_entities_and_edges (
+                    id TEXT PRIMARY KEY,
+                    record_type TEXT NOT NULL,
+                    domain TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    epistemic_kind TEXT NOT NULL DEFAULT 'observation',
+                    state_json TEXT NOT NULL DEFAULT '{}',
+                    ttl_seconds INTEGER NOT NULL DEFAULT 300,
+                    observed_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS gi_strategic_and_autonomous_goals (
+                    id TEXT PRIMARY KEY,
+                    goal_kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    priority INTEGER NOT NULL DEFAULT 50,
+                    authorized_policy_ref TEXT NOT NULL DEFAULT '',
+                    spec_json TEXT NOT NULL DEFAULT '{}',
+                    checkpoints_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS gi_skills_and_research (
+                    id TEXT PRIMARY KEY,
+                    record_kind TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL DEFAULT '1.0.0',
+                    domain TEXT NOT NULL DEFAULT 'general',
+                    validated INTEGER NOT NULL DEFAULT 0,
+                    spec_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS gi_durable_workflows (
+                    workflow_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    priority INTEGER NOT NULL DEFAULT 50,
+                    steps_json TEXT NOT NULL DEFAULT '[]',
+                    journal_json TEXT NOT NULL DEFAULT '[]',
+                    idempotency_ledger_json TEXT NOT NULL DEFAULT '{}',
+                    checkpoint_step INTEGER NOT NULL DEFAULT 0,
+                    worker_id TEXT NOT NULL DEFAULT 'local-worker-0',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS gi_distributed_nodes (
+                    node_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    node_kind TEXT NOT NULL,
+                    connection_status TEXT NOT NULL DEFAULT 'online',
+                    hardware_json TEXT NOT NULL DEFAULT '{}',
+                    capabilities_json TEXT NOT NULL DEFAULT '[]',
+                    permission_policy_json TEXT NOT NULL DEFAULT '{}',
+                    auth_key_id TEXT NOT NULL DEFAULT '',
+                    last_heartbeat_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS gi_governance_and_roadmap (
+                    record_key TEXT PRIMARY KEY,
+                    category TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS gi_benchmark_runs (
+                    run_id TEXT PRIMARY KEY,
+                    suite_version TEXT NOT NULL,
+                    split_name TEXT NOT NULL,
+                    passed_count INTEGER NOT NULL DEFAULT 0,
+                    total_count INTEGER NOT NULL DEFAULT 0,
+                    metrics_json TEXT NOT NULL DEFAULT '{}',
+                    tasks_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -5667,6 +5772,568 @@ class Database:
             d["provenance_report"] = json.loads(d.pop("provenance_report_json") or "{}")
             out.append(d)
         return out
+
+    # ------------------------------------------------------------------
+    # §236–§260 General Intelligence, Cognitive Architecture & Expansion
+    # ------------------------------------------------------------------
+
+    def run_sqlite_integrity_check(self) -> dict[str, Any]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+            journal = conn.execute("PRAGMA journal_mode").fetchone()
+            tables = [
+                r[0]
+                for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
+            ]
+        status = str(row[0]) if row else "unknown"
+        return {
+            "ok": status.lower() == "ok",
+            "integrity_result": status,
+            "journal_mode": str(journal[0]) if journal else "",
+            "table_count": len(tables),
+        }
+
+    def upsert_gi_cognitive_context(self, item: dict[str, Any]) -> dict[str, Any]:
+        cid = str(item.get("context_id") or "default")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            existing = conn.execute(
+                "SELECT state_version FROM gi_cognitive_contexts WHERE context_id = ?",
+                (cid,),
+            ).fetchone()
+            next_version = int(item["state_version"]) if "state_version" in item else ((int(existing[0]) + 1) if existing else 1)
+            conn.execute(
+                """
+                INSERT INTO gi_cognitive_contexts (
+                    context_id, state_version, active_objective, subsystem_states_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(context_id) DO UPDATE SET
+                    state_version = excluded.state_version,
+                    active_objective = excluded.active_objective,
+                    subsystem_states_json = excluded.subsystem_states_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    cid,
+                    next_version,
+                    str(item.get("active_objective") or "")[:500],
+                    _dump(item.get("subsystem_states") or {}),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM gi_cognitive_contexts WHERE context_id = ?", (cid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["subsystem_states"] = json.loads(d.pop("subsystem_states_json") or "{}")
+        return d
+
+    def get_gi_cognitive_context(self, context_id: str = "default") -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM gi_cognitive_contexts WHERE context_id = ?", (context_id[:80],)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["subsystem_states"] = json.loads(d.pop("subsystem_states_json") or "{}")
+        return d
+
+    def save_gi_memory(self, item: dict[str, Any]) -> dict[str, Any]:
+        mid = str(item.get("id") or f"gimem-{uuid.uuid4().hex[:12]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO gi_multilayer_memories (
+                    id, layer, subject, attribute_key, content, fingerprint,
+                    claim_origin, verification_mode, evidence_status, confidence_score,
+                    source_ref, related_concepts_json, relevant_projects_json,
+                    review_or_expiration_at, correction_history_json, superseded_by,
+                    forgotten, created_at, last_verified_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    layer = excluded.layer,
+                    subject = excluded.subject,
+                    attribute_key = excluded.attribute_key,
+                    content = excluded.content,
+                    fingerprint = excluded.fingerprint,
+                    claim_origin = excluded.claim_origin,
+                    verification_mode = excluded.verification_mode,
+                    evidence_status = excluded.evidence_status,
+                    confidence_score = excluded.confidence_score,
+                    source_ref = excluded.source_ref,
+                    related_concepts_json = excluded.related_concepts_json,
+                    relevant_projects_json = excluded.relevant_projects_json,
+                    review_or_expiration_at = excluded.review_or_expiration_at,
+                    correction_history_json = excluded.correction_history_json,
+                    superseded_by = excluded.superseded_by,
+                    forgotten = excluded.forgotten,
+                    last_verified_at = excluded.last_verified_at
+                """,
+                (
+                    mid,
+                    str(item.get("layer") or "semantic_memory")[:60],
+                    str(item.get("subject") or "")[:200],
+                    str(item.get("attribute_key") or "")[:120],
+                    str(item.get("content") or "")[:4000],
+                    str(item.get("fingerprint") or "")[:128],
+                    str(item.get("claim_origin") or "direct_user_statement")[:60],
+                    str(item.get("verification_mode") or "source_reported")[:60],
+                    str(item.get("evidence_status") or "Untested")[:40],
+                    float(item.get("confidence_score") if item.get("confidence_score") is not None else 0.5),
+                    str(item.get("source_ref") or "")[:300],
+                    _dump(item.get("related_concepts") or []),
+                    _dump(item.get("relevant_projects") or []),
+                    str(item.get("review_or_expiration_at") or "")[:64],
+                    _dump(item.get("correction_history") or []),
+                    str(item.get("superseded_by") or "")[:80],
+                    1 if item.get("forgotten") else 0,
+                    str(item.get("created_at") or now),
+                    str(item.get("last_verified_at") or ""),
+                ),
+            )
+            r = conn.execute("SELECT * FROM gi_multilayer_memories WHERE id = ?", (mid,)).fetchone()
+        return self._decode_gi_memory(r)
+
+    @staticmethod
+    def _decode_gi_memory(r: sqlite3.Row | None) -> dict[str, Any]:
+        if r is None:
+            return {}
+        d = dict(r)
+        d["forgotten"] = bool(d["forgotten"])
+        d["related_concepts"] = json.loads(d.pop("related_concepts_json") or "[]")
+        d["relevant_projects"] = json.loads(d.pop("relevant_projects_json") or "[]")
+        d["correction_history"] = json.loads(d.pop("correction_history_json") or "[]")
+        return d
+
+    def get_gi_memory(self, mem_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM gi_multilayer_memories WHERE id = ?", (mem_id[:80],)).fetchone()
+        return self._decode_gi_memory(r) if r else None
+
+    def list_gi_memories(
+        self,
+        *,
+        layer: str = "",
+        subject: str = "",
+        include_forgotten: bool = False,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if layer:
+            clauses.append("layer = ?")
+            params.append(layer)
+        if subject:
+            clauses.append("LOWER(subject) = LOWER(?)")
+            params.append(subject)
+        if not include_forgotten:
+            clauses.append("forgotten = 0")
+        params.append(max(1, min(int(limit), 1000)))
+        sql = f"SELECT * FROM gi_multilayer_memories WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT ?"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._decode_gi_memory(r) for r in rows]
+
+    def upsert_gi_world_record(self, item: dict[str, Any]) -> dict[str, Any]:
+        wid = str(item.get("id") or f"giw-{uuid.uuid4().hex[:12]}")[:100]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO gi_world_entities_and_edges (
+                    id, record_type, domain, name, epistemic_kind, state_json, ttl_seconds, observed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    record_type = excluded.record_type,
+                    domain = excluded.domain,
+                    name = excluded.name,
+                    epistemic_kind = excluded.epistemic_kind,
+                    state_json = excluded.state_json,
+                    ttl_seconds = excluded.ttl_seconds,
+                    observed_at = excluded.observed_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    wid,
+                    str(item.get("record_type") or "entity")[:40],
+                    str(item.get("domain") or "applications")[:60],
+                    str(item.get("name") or wid)[:200],
+                    str(item.get("epistemic_kind") or "observation")[:40],
+                    _dump(item.get("state") or {}),
+                    int(item.get("ttl_seconds") if item.get("ttl_seconds") is not None else 300),
+                    str(item.get("observed_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM gi_world_entities_and_edges WHERE id = ?", (wid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["state"] = json.loads(d.pop("state_json") or "{}")
+        return d
+
+    def list_gi_world_records(self, *, record_type: str = "", domain: str = "", limit: int = 500) -> list[dict[str, Any]]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if record_type:
+            clauses.append("record_type = ?")
+            params.append(record_type)
+        if domain:
+            clauses.append("domain = ?")
+            params.append(domain)
+        params.append(max(1, min(int(limit), 2000)))
+        sql = f"SELECT * FROM gi_world_entities_and_edges WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT ?"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["state"] = json.loads(d.pop("state_json") or "{}")
+            out.append(d)
+        return out
+
+    def upsert_gi_goal_or_roadmap(self, item: dict[str, Any]) -> dict[str, Any]:
+        gid = str(item.get("id") or f"gigoal-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO gi_strategic_and_autonomous_goals (
+                    id, goal_kind, title, status, priority, authorized_policy_ref,
+                    spec_json, checkpoints_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status = excluded.status,
+                    priority = excluded.priority,
+                    spec_json = excluded.spec_json,
+                    checkpoints_json = excluded.checkpoints_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    gid,
+                    str(item.get("goal_kind") or "autonomous_objective")[:60],
+                    str(item.get("title") or gid)[:240],
+                    str(item.get("status") or "proposed")[:40],
+                    int(item.get("priority") if item.get("priority") is not None else 50),
+                    str(item.get("authorized_policy_ref") or "")[:160],
+                    _dump(item.get("spec") or {}),
+                    _dump(item.get("checkpoints") or []),
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM gi_strategic_and_autonomous_goals WHERE id = ?", (gid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["spec"] = json.loads(d.pop("spec_json") or "{}")
+        d["checkpoints"] = json.loads(d.pop("checkpoints_json") or "[]")
+        return d
+
+    def get_gi_goal_or_roadmap(self, goal_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM gi_strategic_and_autonomous_goals WHERE id = ?", (goal_id[:80],)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["spec"] = json.loads(d.pop("spec_json") or "{}")
+        d["checkpoints"] = json.loads(d.pop("checkpoints_json") or "[]")
+        return d
+
+    def list_gi_goals_and_roadmaps(self, *, goal_kind: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if goal_kind:
+            clauses.append("goal_kind = ?")
+            params.append(goal_kind)
+        params.append(max(1, min(int(limit), 500)))
+        sql = f"SELECT * FROM gi_strategic_and_autonomous_goals WHERE {' AND '.join(clauses)} ORDER BY priority DESC, updated_at DESC LIMIT ?"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["spec"] = json.loads(d.pop("spec_json") or "{}")
+            d["checkpoints"] = json.loads(d.pop("checkpoints_json") or "[]")
+            out.append(d)
+        return out
+
+    def upsert_gi_skill_or_study(self, item: dict[str, Any]) -> dict[str, Any]:
+        sid = str(item.get("id") or f"giskill-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO gi_skills_and_research (
+                    id, record_kind, name, version, domain, validated, spec_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    version = excluded.version,
+                    domain = excluded.domain,
+                    validated = excluded.validated,
+                    spec_json = excluded.spec_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    sid,
+                    str(item.get("record_kind") or "acquired_skill")[:50],
+                    str(item.get("name") or sid)[:160],
+                    str(item.get("version") or "1.0.0")[:40],
+                    str(item.get("domain") or "general")[:80],
+                    1 if item.get("validated") else 0,
+                    _dump(item.get("spec") or {}),
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM gi_skills_and_research WHERE id = ?", (sid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["validated"] = bool(d["validated"])
+        d["spec"] = json.loads(d.pop("spec_json") or "{}")
+        return d
+
+    def list_gi_skills_and_studies(self, *, record_kind: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if record_kind:
+            clauses.append("record_kind = ?")
+            params.append(record_kind)
+        params.append(max(1, min(int(limit), 500)))
+        sql = f"SELECT * FROM gi_skills_and_research WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT ?"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["validated"] = bool(d["validated"])
+            d["spec"] = json.loads(d.pop("spec_json") or "{}")
+            out.append(d)
+        return out
+
+    def upsert_gi_durable_workflow(self, item: dict[str, Any]) -> dict[str, Any]:
+        wfid = str(item.get("workflow_id") or f"giwf-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO gi_durable_workflows (
+                    workflow_id, title, status, priority, steps_json, journal_json,
+                    idempotency_ledger_json, checkpoint_step, worker_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workflow_id) DO UPDATE SET
+                    status = excluded.status,
+                    priority = excluded.priority,
+                    steps_json = excluded.steps_json,
+                    journal_json = excluded.journal_json,
+                    idempotency_ledger_json = excluded.idempotency_ledger_json,
+                    checkpoint_step = excluded.checkpoint_step,
+                    worker_id = excluded.worker_id,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    wfid,
+                    str(item.get("title") or wfid)[:240],
+                    str(item.get("status") or "pending")[:40],
+                    int(item.get("priority") if item.get("priority") is not None else 50),
+                    _dump(item.get("steps") or []),
+                    _dump(item.get("journal") or []),
+                    _dump(item.get("idempotency_ledger") or {}),
+                    int(item.get("checkpoint_step") or 0),
+                    str(item.get("worker_id") or "local-worker-0")[:80],
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM gi_durable_workflows WHERE workflow_id = ?", (wfid,)).fetchone()
+        return self._decode_gi_workflow(r)
+
+    @staticmethod
+    def _decode_gi_workflow(r: sqlite3.Row | None) -> dict[str, Any]:
+        if r is None:
+            return {}
+        d = dict(r)
+        d["steps"] = json.loads(d.pop("steps_json") or "[]")
+        d["journal"] = json.loads(d.pop("journal_json") or "[]")
+        d["idempotency_ledger"] = json.loads(d.pop("idempotency_ledger_json") or "{}")
+        return d
+
+    def get_gi_durable_workflow(self, workflow_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM gi_durable_workflows WHERE workflow_id = ?", (workflow_id[:80],)).fetchone()
+        return self._decode_gi_workflow(r) if r else None
+
+    def list_gi_durable_workflows(self, *, status: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        params.append(max(1, min(int(limit), 300)))
+        sql = f"SELECT * FROM gi_durable_workflows WHERE {' AND '.join(clauses)} ORDER BY priority DESC, updated_at DESC LIMIT ?"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._decode_gi_workflow(r) for r in rows]
+
+    def upsert_gi_distributed_node(self, item: dict[str, Any]) -> dict[str, Any]:
+        nid = str(item.get("node_id") or f"ginode-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO gi_distributed_nodes (
+                    node_id, name, node_kind, connection_status, hardware_json,
+                    capabilities_json, permission_policy_json, auth_key_id, last_heartbeat_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(node_id) DO UPDATE SET
+                    name = excluded.name,
+                    node_kind = excluded.node_kind,
+                    connection_status = excluded.connection_status,
+                    hardware_json = excluded.hardware_json,
+                    capabilities_json = excluded.capabilities_json,
+                    permission_policy_json = excluded.permission_policy_json,
+                    auth_key_id = excluded.auth_key_id,
+                    last_heartbeat_at = excluded.last_heartbeat_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    nid,
+                    str(item.get("name") or nid)[:160],
+                    str(item.get("node_kind") or "compute_node")[:60],
+                    str(item.get("connection_status") or "online")[:40],
+                    _dump(item.get("hardware") or {}),
+                    _dump(item.get("capabilities") or []),
+                    _dump(item.get("permission_policy") or {}),
+                    str(item.get("auth_key_id") or "")[:80],
+                    str(item.get("last_heartbeat_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM gi_distributed_nodes WHERE node_id = ?", (nid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["hardware"] = json.loads(d.pop("hardware_json") or "{}")
+        d["capabilities"] = json.loads(d.pop("capabilities_json") or "[]")
+        d["permission_policy"] = json.loads(d.pop("permission_policy_json") or "{}")
+        return d
+
+    def get_gi_distributed_node(self, node_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM gi_distributed_nodes WHERE node_id = ?", (node_id[:80],)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["hardware"] = json.loads(d.pop("hardware_json") or "{}")
+        d["capabilities"] = json.loads(d.pop("capabilities_json") or "[]")
+        d["permission_policy"] = json.loads(d.pop("permission_policy_json") or "{}")
+        return d
+
+    def list_gi_distributed_nodes(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM gi_distributed_nodes ORDER BY updated_at DESC").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["hardware"] = json.loads(d.pop("hardware_json") or "{}")
+            d["capabilities"] = json.loads(d.pop("capabilities_json") or "[]")
+            d["permission_policy"] = json.loads(d.pop("permission_policy_json") or "{}")
+            out.append(d)
+        return out
+
+    def upsert_gi_governance_record(self, record_key: str, category: str, payload: dict[str, Any]) -> dict[str, Any]:
+        rk = str(record_key)[:140]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO gi_governance_and_roadmap (record_key, category, payload_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(record_key) DO UPDATE SET
+                    category = excluded.category,
+                    payload_json = excluded.payload_json,
+                    updated_at = excluded.updated_at
+                """,
+                (rk, str(category)[:60], _dump(payload or {}), now),
+            )
+            r = conn.execute("SELECT * FROM gi_governance_and_roadmap WHERE record_key = ?", (rk,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["payload"] = json.loads(d.pop("payload_json") or "{}")
+        return d
+
+    def get_gi_governance_record(self, record_key: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM gi_governance_and_roadmap WHERE record_key = ?", (record_key[:140],)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["payload"] = json.loads(d.pop("payload_json") or "{}")
+        return d
+
+    def list_gi_governance_records(self, *, category: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        params.append(max(1, min(int(limit), 500)))
+        sql = f"SELECT * FROM gi_governance_and_roadmap WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT ?"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["payload"] = json.loads(d.pop("payload_json") or "{}")
+            out.append(d)
+        return out
+
+    def save_gi_benchmark_run(self, item: dict[str, Any]) -> dict[str, Any]:
+        rid = str(item.get("run_id") or f"gibench-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO gi_benchmark_runs (
+                    run_id, suite_version, split_name, passed_count, total_count,
+                    metrics_json, tasks_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rid,
+                    str(item.get("suite_version") or "nova-gi-260-v1")[:60],
+                    str(item.get("split_name") or "unseen_acceptance_20")[:60],
+                    int(item.get("passed_count") or 0),
+                    int(item.get("total_count") or 0),
+                    _dump(item.get("metrics") or {}),
+                    _dump(item.get("tasks") or []),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM gi_benchmark_runs WHERE run_id = ?", (rid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["metrics"] = json.loads(d.pop("metrics_json") or "{}")
+        d["tasks"] = json.loads(d.pop("tasks_json") or "[]")
+        return d
+
+    def list_gi_benchmark_runs(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM gi_benchmark_runs ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["metrics"] = json.loads(d.pop("metrics_json") or "{}")
+            d["tasks"] = json.loads(d.pop("tasks_json") or "[]")
+            out.append(d)
+        return out
+
 
 
 

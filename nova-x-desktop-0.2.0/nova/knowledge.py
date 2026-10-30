@@ -362,7 +362,7 @@ class KnowledgeStore:
             parent = Path(self.db_path).parent
             if str(parent):
                 parent.mkdir(parents=True, exist_ok=True)
-            self._connection = sqlite3.connect(self.db_path, timeout=10.0)
+            self._connection = sqlite3.connect(self.db_path, timeout=10.0, check_same_thread=False)
             self._connection.row_factory = sqlite3.Row
             self._connection.execute("PRAGMA journal_mode=WAL")
             self._initialize()

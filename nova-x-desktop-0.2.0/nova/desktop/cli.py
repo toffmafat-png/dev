@@ -62,6 +62,12 @@ def _parser() -> argparse.ArgumentParser:
     mig_cmd.add_argument("--preview", default="", help="Preview compatibility & conflicts for a migration archive safely")
     mig_cmd.add_argument("--restore", default="", help="Restore a verified migration archive with pre-restore rollback backup")
     mig_cmd.add_argument("--offline-kit", action="store_true", help="Build a verified offline migration & reinstallation kit")
+    gi_cmd = subparsers.add_parser("gi", help="General Intelligence, Unified Cognitive Architecture & Capability Expansion (§236–§260)")
+    gi_cmd.add_argument("--capabilities", action="store_true", help="Print honest capability & cognitive subsystem matrix")
+    gi_cmd.add_argument("--roadmap", action="store_true", help="Inspect living 10-section knowledge & capability roadmap (§259)")
+    gi_cmd.add_argument("--reliability", action="store_true", help="Run 15-point reliability & failure-domain audit (§252)")
+    gi_cmd.add_argument("--security-audit", action="store_true", help="Run OWASP GenAI & NIST AI RMF adversarial security suite (§253)")
+    gi_cmd.add_argument("--cycle", default="", help="Run a coordinated 11-subsystem cognitive cycle for an objective (§236)")
     worker = subparsers.add_parser("worker", help="Run optional user-level background goal/task worker")
     worker.add_argument("--once", action="store_true", help="Run one scheduled-goal check tick and exit")
     worker.add_argument("--poll-seconds", type=int, default=15, help="Polling interval in seconds (5–300)")
@@ -371,6 +377,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(am.migration.restore_migration_package(args.restore), indent=2, default=str))
                 return 0
             print(json.dumps(am.status_summary(), indent=2, default=str))
+            return 0
+        finally:
+            runtime.close()
+    if args.action == "gi":
+        runtime = DesktopRuntime()
+        try:
+            gi = runtime.general_intelligence
+            if args.capabilities:
+                print(json.dumps(gi.honest_capability_statement(), indent=2, default=str))
+                return 0
+            if args.roadmap:
+                print(json.dumps(gi.expansion_hub.get_living_capability_roadmap(), indent=2, default=str))
+                return 0
+            if args.reliability:
+                print(json.dumps(gi.reliability.run_15_point_reliability_audit(), indent=2, default=str))
+                return 0
+            if args.security_audit:
+                print(json.dumps(gi.ai_security.run_adversarial_security_suite(), indent=2, default=str))
+                return 0
+            if args.cycle:
+                print(json.dumps(gi.cognitive_arch.run_coordinated_cycle(objective=args.cycle), indent=2, default=str))
+                return 0
+            print(json.dumps(gi.status_summary(), indent=2, default=str))
             return 0
         finally:
             runtime.close()

@@ -742,6 +742,60 @@ def _acquisition_migration_health(app_state: Any) -> dict[str, Any]:
     return base
 
 
+def _general_intelligence_health(app_state: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "sections": "236-260",
+        "unified_single_architecture": True,
+        "cognitive_subsystems": 11,
+        "multilayer_memories": 0,
+        "validated_skills": 0,
+        "registered_nodes": 0,
+        "advertises_agi": False,
+        "degraded": True,
+        "detail": "/api/gi/status",
+    }
+    try:
+        platform_svc = getattr(app_state, "platform", None) or getattr(getattr(app_state, "engine", None), "platform", None)
+        gi = getattr(platform_svc, "general_intelligence", None) if platform_svc is not None else None
+        if gi is None:
+            return base
+        s = gi.status_summary()
+        base["multilayer_memories"] = int(s["multilayer_memories_count"])
+        base["validated_skills"] = int(s["validated_acquired_skills_count"])
+        base["registered_nodes"] = int(s["registered_distributed_nodes_count"])
+        base["degraded"] = bool(s["recovery_mode_active"])
+    except Exception:
+        base["degraded"] = True
+    return base
+
+
+class GICognitiveCycleApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    objective: str = Field(min_length=3, max_length=500)
+    context_id: str = Field(default="default", max_length=80)
+
+
+class GIMemoryCreateApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    layer: str = Field(default="semantic_memory", max_length=60)
+    subject: str = Field(min_length=2, max_length=200)
+    content: str = Field(min_length=2, max_length=2000)
+    attribute_key: str = Field(default="", max_length=120)
+    claim_origin: str = Field(default="direct_user_statement", max_length=60)
+    source_ref: str = Field(default="", max_length=300)
+
+
+class GIUntrustedScanApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=10000)
+    source: str = Field(default="external_document", max_length=160)
+
+
+class GIPreferencesUpdateApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    updates: dict[str, Any]
+
+
 class AcquisitionInstallApiRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     capability_or_name: str = Field(min_length=2, max_length=200)
@@ -1169,6 +1223,7 @@ def create_app(
             "kali_intel": _kali_intel_health(app.state),
             "cyber_division": _cyber_division_health(app.state),
             "acquisition_migration": _acquisition_migration_health(app.state),
+            "general_intelligence": _general_intelligence_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -2926,6 +2981,71 @@ def create_app(
             decrypt_archive_passphrase=payload.passphrase,
             credential_passphrase=payload.passphrase,
         )
+
+    # --- General Intelligence, Cognitive Architecture & Expansion (§236–§260) ---
+    @app.get("/api/gi/status")
+    async def gi_status() -> dict[str, Any]:
+        return engine.platform.general_intelligence.status_summary()
+
+    @app.get("/api/gi/capabilities")
+    async def gi_capabilities() -> dict[str, Any]:
+        return engine.platform.general_intelligence.honest_capability_statement()
+
+    @app.post("/api/gi/cognitive-cycle")
+    async def gi_cognitive_cycle(payload: GICognitiveCycleApiRequest) -> dict[str, Any]:
+        return engine.platform.general_intelligence.cognitive_arch.run_coordinated_cycle(
+            context_id=payload.context_id,
+            objective=payload.objective,
+        )
+
+    @app.post("/api/gi/memory")
+    async def gi_record_memory(payload: GIMemoryCreateApiRequest) -> dict[str, Any]:
+        try:
+            return engine.platform.general_intelligence.memory_engine.record_memory(
+                layer=payload.layer,
+                subject=payload.subject,
+                content=payload.content,
+                attribute_key=payload.attribute_key,
+                claim_origin=payload.claim_origin,
+                source_ref=payload.source_ref,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/gi/roadmap")
+    async def gi_capability_roadmap() -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.general_intelligence.expansion_hub.get_living_capability_roadmap,
+        )
+
+    @app.get("/api/gi/reliability")
+    async def gi_reliability_audit() -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.general_intelligence.reliability.run_15_point_reliability_audit,
+        )
+
+    @app.post("/api/gi/security/scan")
+    async def gi_security_scan(payload: GIUntrustedScanApiRequest) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.general_intelligence.ai_security.inspect_untrusted_content,
+            payload.text,
+            source=payload.source,
+        )
+
+    @app.get("/api/gi/preferences")
+    async def gi_get_preferences() -> dict[str, Any]:
+        return engine.platform.general_intelligence.alignment.get_preferences()
+
+    @app.put("/api/gi/preferences")
+    async def gi_update_preferences(payload: GIPreferencesUpdateApiRequest) -> dict[str, Any]:
+        try:
+            return engine.platform.general_intelligence.alignment.update_preferences(payload.updates)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/gi/nodes")
+    async def gi_cluster_capacity() -> dict[str, Any]:
+        return engine.platform.general_intelligence.distributed_nodes.measured_cluster_capacity()
 
     return app
 
