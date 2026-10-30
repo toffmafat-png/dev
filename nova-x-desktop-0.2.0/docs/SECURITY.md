@@ -63,3 +63,8 @@ This is an early single-user foundation, not a security-certified product. It la
 Sessions live in process memory only. `POST /api/auth/logout` clears the `HttpOnly` cookie **and** revokes the session server-side, so a cookie captured before logout stops working immediately rather than remaining valid until its TTL expires. Expired sessions are pruned periodically, and the number of live sessions is capped (`MAX_ACTIVE_SESSIONS`); when the cap is reached the session closest to expiry is evicted rather than rejecting a new sign-in. Restarting or reconfiguring the service invalidates all sessions, as does rotating `NOVA_ACCESS_TOKEN`. Because the store is in-memory, sessions are not shared across replicas — run one worker (`--workers 1`, the documented default) or move to a shared session store before scaling out.
 
 Local HTTP is not permitted for external provider hosts. Reverse-proxy headers are not trusted for client identity; `X-Forwarded-Proto` is used only for Secure cookie handling as described in code.
+
+## Single-user Kali Linux personal-use policy
+
+For DEV's primary operating model as a privately operated, single-user personal AI system installed directly on the operator's Kali Linux computer — including security framework flexibility, persistent user-configured permissions without repeated approval prompts, risk-proportionate material safeguards, persistent personal cybersecurity lab scopes, and local-first privacy with visible external transfers — see `docs/PERSONAL_USE_SECURITY_POLICY.md`.
+

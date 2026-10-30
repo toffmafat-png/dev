@@ -464,6 +464,8 @@ class AISecurityAndGovernanceEngine:
             "sanitized_text": "\n".join(sanitized_lines).strip(),
             "permission_expansion_permitted": ALLOW_SELF_PERMISSION_EXPANSION,
             "framework_references": ["OWASP-LLM01:PromptInjection", "OWASP-LLM06:ExcessiveAgency", "NIST-AI-RMF-1.0"],
+            "framework_mode": "engineering_reference_not_mandatory_checklist",
+            "strict_owasp_checklist_mandatory": False,
         }
 
     def authorize_tool_invocation(

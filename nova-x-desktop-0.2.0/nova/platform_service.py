@@ -39,6 +39,7 @@ from nova.modalities import (
     VoiceLayer,
 )
 from nova.observability import Redactor, TraceCollector
+from nova.personal_policy.service import PersonalSecurityAndAutonomyService
 from nova.plugins import PluginManager, builtin_sdk_examples
 from nova.privacy_intel.service import PrivacyIntelligenceService
 from nova.resources import ResourceManager
@@ -51,6 +52,7 @@ from nova.tools.creation import build_creation_tools
 from nova.tools.cyber_division import build_cyber_division_tools
 from nova.tools.general_intelligence import build_general_intelligence_tools
 from nova.tools.kali_intel import build_kali_intel_tools
+from nova.tools.personal_policy import build_personal_policy_tools
 from nova.tools.privacy_intel import build_privacy_intel_tools
 from nova.tools.registry import ToolRegistry
 from nova.tools.system_access import build_system_access_tools
@@ -111,6 +113,7 @@ class PlatformService:
     cyber_division: CybersecurityEngineeringDivision = field(init=False)
     acquisition_migration: AutonomousAcquisitionAndMigrationService = field(init=False)
     general_intelligence: GeneralIntelligenceService = field(init=False)
+    personal_policy: PersonalSecurityAndAutonomyService = field(init=False)
 
     def __post_init__(self) -> None:
         data_dir = Path(self.settings.data_dir)
@@ -362,6 +365,16 @@ class PlatformService:
         for gi_tool in build_general_intelligence_tools(lambda: self.general_intelligence):
             if self.tools.get(gi_tool.name) is None:
                 self.tools.register(gi_tool)
+        self.personal_policy = PersonalSecurityAndAutonomyService(
+            db=self.db,
+            workspace_dir=workspace_dir,
+            redactor=self.redactor,
+            autonomy_policy=self.autonomy_policy,
+            cyber_division=self.cyber_division,
+        )
+        for pp_tool in build_personal_policy_tools(lambda: self.personal_policy):
+            if self.tools.get(pp_tool.name) is None:
+                self.tools.register(pp_tool)
 
     def _register_baseline_integrations(self) -> None:
         self.gateway.register(
@@ -440,6 +453,7 @@ class PlatformService:
                 "tor_enabled": bool(self.privacy_intel.tor.get_config()["tor_enabled"]),
                 "onion_hosting_enabled": bool(self.privacy_intel.tor.get_config()["onion_hosting_enabled"]),
             },
+            "personal_policy": self.personal_policy.status_summary(),
             "recommendations": [item.to_dict() for item in recommendation_catalogue()],
         }
 

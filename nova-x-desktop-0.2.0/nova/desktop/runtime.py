@@ -161,6 +161,7 @@ class DesktopRuntime:
         self.cyber_division = self.platform.cyber_division
         self.acquisition_migration = self.platform.acquisition_migration
         self.general_intelligence = self.platform.general_intelligence
+        self.personal_policy = self.platform.personal_policy
         self.hybrid_cloud.bind_runtime_orchestrator(self.model_manager, self.intelligence)
         self.async_service = AsyncService()
         self.closed = False

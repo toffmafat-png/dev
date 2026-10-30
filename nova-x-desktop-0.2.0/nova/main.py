@@ -769,6 +769,52 @@ def _general_intelligence_health(app_state: Any) -> dict[str, Any]:
     return base
 
 
+def _personal_policy_health(app_state: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "deployment_model": "single_user_personal_kali_linux",
+        "strict_owasp_checklist_mandatory": False,
+        "compliance_theatre_enabled": False,
+        "profile_mode": "balanced",
+        "active_persistent_grants_count": 0,
+        "external_transfers_logged_count": 0,
+        "local_storage_by_default": True,
+        "degraded": True,
+        "detail": "/api/personal-policy/status",
+    }
+    try:
+        platform_svc = getattr(app_state, "platform", None) or getattr(getattr(app_state, "engine", None), "platform", None)
+        pp = getattr(platform_svc, "personal_policy", None) if platform_svc is not None else None
+        if pp is None:
+            return base
+        s = pp.status_summary()
+        base.update(s)
+        base["degraded"] = False
+    except Exception:
+        base["degraded"] = True
+    return base
+
+
+class PersonalPolicyConfigApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    profile_mode: str | None = Field(default=None, max_length=60)
+    settings_updates: dict[str, Any] | None = None
+
+
+class PersonalPersistentGrantApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    domain: str = Field(default="development_tools", max_length=60)
+    scope_target: str = Field(min_length=1, max_length=400)
+    allowed_programs: list[str] = Field(default_factory=list, max_length=50)
+    notes: str = Field(default="", max_length=300)
+
+
+class PersonalCyberLabApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=2, max_length=140)
+    category: str = Field(default="development_environment", max_length=60)
+    targets: list[str] = Field(min_length=1, max_length=50)
+
+
 class GICognitiveCycleApiRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     objective: str = Field(min_length=3, max_length=500)
@@ -1224,6 +1270,7 @@ def create_app(
             "cyber_division": _cyber_division_health(app.state),
             "acquisition_migration": _acquisition_migration_health(app.state),
             "general_intelligence": _general_intelligence_health(app.state),
+            "personal_policy": _personal_policy_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -3046,6 +3093,59 @@ def create_app(
     @app.get("/api/gi/nodes")
     async def gi_cluster_capacity() -> dict[str, Any]:
         return engine.platform.general_intelligence.distributed_nodes.measured_cluster_capacity()
+
+    # --- Personal-Use Security & Autonomy Policy (Sections 1–7) ---
+    @app.get("/api/personal-policy/status")
+    async def personal_policy_status() -> dict[str, Any]:
+        pp = engine.platform.personal_policy
+        return {
+            "status": pp.status_summary(),
+            "policy": pp.autonomy.get_policy(),
+            "manifest": pp.policy_manifest(),
+            "active_grants": pp.db.list_personal_persistent_grants(active_only=True),
+        }
+
+    @app.put("/api/personal-policy/config")
+    async def personal_policy_configure(payload: PersonalPolicyConfigApiRequest) -> dict[str, Any]:
+        try:
+            return engine.platform.personal_policy.autonomy.configure_policy(
+                profile_mode=payload.profile_mode,
+                settings_updates=payload.settings_updates,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/personal-policy/grants")
+    async def personal_policy_add_grant(payload: PersonalPersistentGrantApiRequest) -> dict[str, Any]:
+        try:
+            return engine.platform.personal_policy.autonomy.grant_persistent_permission(
+                domain=payload.domain,
+                scope_target=payload.scope_target,
+                allowed_programs=payload.allowed_programs,
+                notes=payload.notes,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/personal-policy/grants/{grant_id}")
+    async def personal_policy_revoke_grant(grant_id: str) -> dict[str, Any]:
+        revoked = engine.platform.personal_policy.autonomy.revoke_persistent_permission(grant_id)
+        return {"grant_id": grant_id, "revoked": revoked}
+
+    @app.post("/api/personal-policy/cyber-labs")
+    async def personal_policy_register_lab(payload: PersonalCyberLabApiRequest) -> dict[str, Any]:
+        try:
+            return engine.platform.personal_policy.cyber_research.register_persistent_lab_environment(
+                name=payload.name,
+                category=payload.category,
+                targets=payload.targets,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/personal-policy/transfers")
+    async def personal_policy_transfers() -> dict[str, Any]:
+        return engine.platform.personal_policy.local_privacy.inspect_external_transfers()
 
     return app
 

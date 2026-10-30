@@ -387,6 +387,17 @@ class CloudPrivacyGateway:
                 "reason": reason,
             }
         )
+        if provider_type not in {"ollama", "llama_cpp"}:
+            self.db.record_personal_external_transfer(
+                {
+                    "destination": f"{provider_type}:{endpoint_host or provider_type}",
+                    "purpose": f"task:{task_id or 'model_context'}",
+                    "project_id": "",
+                    "bytes_sent": payload_chars,
+                    "credentials_stripped": True,
+                    "allowed": decision == "permitted",
+                }
+            )
         return {
             "permitted": decision == "permitted",
             "decision": decision,

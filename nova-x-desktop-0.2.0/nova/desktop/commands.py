@@ -130,8 +130,14 @@ class CommandRunner:
             program_name = Path(argv[0]).name.lower() if isinstance(argv[0], str) else ""
             if self.policy._has_sensitive_path_or_flag(argv):
                 return ToolOutcome("denied", "Agent-mediated process commands cannot access credential/private-key paths or pass secret-like arguments to an external process. Use the local UI and keyring for credential work.")
-            if program_name in AGENT_BLOCKED_PROGRAMS or program_name in AGENT_BLOCKED_WRAPPERS or program_name in AGENT_ONLY_BLOCKED_PROGRAMS or _is_interpreter_program(program_name):
-                return ToolOutcome("denied", "Agent-mediated shells/interpreters, build runners, file readers/scanners/mutators, Git commands, and indirect command wrappers are disabled in this build. Use the bounded workspace.* tools for scoped files, or run an explicitly user-authored local command from the command page/CLI.")
+            personal_grant = self.policy.check_personal_grant(argv, cwd_value, privileged=privileged)
+            if personal_grant is None and (
+                program_name in AGENT_BLOCKED_PROGRAMS
+                or program_name in AGENT_BLOCKED_WRAPPERS
+                or program_name in AGENT_ONLY_BLOCKED_PROGRAMS
+                or _is_interpreter_program(program_name)
+            ):
+                return ToolOutcome("denied", "Agent-mediated shells/interpreters, build runners, file readers/scanners/mutators, Git commands, and indirect command wrappers are disabled by default until authorized via a persistent personal permission grant or personal power-user profile.")
         decision = self.policy.evaluate(argv, cwd_value, privileged=privileged)
         if decision["action"] == "deny":
             return ToolOutcome("denied", decision["reason"], {"rule": decision["rule"]})
