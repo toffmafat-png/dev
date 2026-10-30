@@ -32,6 +32,10 @@ def _parser() -> argparse.ArgumentParser:
     osint_cmd = subparsers.add_parser("osint", help="Run §165.3 Unified Multi-Source Search or §165.4 12-Step Research Assistant")
     osint_cmd.add_argument("query", help="Search query or research question")
     osint_cmd.add_argument("--research", action="store_true", help="Run full 12-step epistemic research report")
+    gw_cmd = subparsers.add_parser("gateway", help="Inspect Cloud Frontier Gateway, Privacy Ledger, Offline Queue & llama.cpp RAM fit (§1–§11)")
+    gw_cmd.add_argument("--transmissions", action="store_true", help="List secret-free cloud privacy transmission audit entries")
+    gw_cmd.add_argument("--llama-check", default="", help="Check whether a compact quantized GGUF model fits host RAM")
+    gw_cmd.add_argument("--local-project", default="", help="Mark a project key/path as local-only (blocks cloud providers)")
     worker = subparsers.add_parser("worker", help="Run optional user-level background goal/task worker")
     worker.add_argument("--once", action="store_true", help="Run one scheduled-goal check tick and exit")
     worker.add_argument("--poll-seconds", type=int, default=15, help="Polling interval in seconds (5–300)")
@@ -214,6 +218,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else runtime.privacy_intel.search.search(args.query)
             )
             print(json.dumps(payload, indent=2, default=str))
+            return 0
+        finally:
+            runtime.close()
+    if args.action == "gateway":
+        runtime = DesktopRuntime()
+        try:
+            if args.local_project:
+                proj = runtime.hybrid_cloud.privacy_gateway.set_project_local_only(
+                    args.local_project,
+                    project_path=args.local_project,
+                    local_only=True,
+                )
+                print(json.dumps({"local_only_project": proj}, indent=2, default=str))
+                return 0
+            if args.llama_check:
+                fit = runtime.hybrid_cloud.llama_cpp_advisor.evaluate_candidate(args.llama_check)
+                print(json.dumps(fit, indent=2, default=str))
+                return 0
+            if args.transmissions:
+                rows = runtime.hybrid_cloud.db.list_cloud_transmissions(limit=50)
+                print(json.dumps({"transmissions": rows}, indent=2, default=str))
+                return 0
+            print(json.dumps(runtime.hybrid_cloud.status_summary(), indent=2, default=str))
             return 0
         finally:
             runtime.close()

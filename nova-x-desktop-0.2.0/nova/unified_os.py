@@ -98,15 +98,24 @@ class BackgroundWorkerSupervisor:
                 executed_monitors = list(self.monitor_tick_fn() or [])
             except Exception:
                 executed_monitors = []
+        pending_cloud_queue = self.db.list_offline_cloud_tasks(status="queued_waiting_cloud", limit=50)
         hb = self.db.upsert_worker_heartbeat(
             worker_id,
             pid=pid,
             mode="user_worker",
             status="running",
             dispatched_count=len(due) + len(executed_monitors),
-            detail=f"Checked scheduled goals ({len(due)}) and research monitors ({len(executed_monitors)}).",
+            detail=(
+                f"Checked scheduled goals ({len(due)}), research monitors ({len(executed_monitors)}), "
+                f"and offline cloud queue ({len(pending_cloud_queue)} queued)."
+            ),
         )
-        return {"worker": hb, "dispatched_tasks": due, "executed_monitors": executed_monitors}
+        return {
+            "worker": hb,
+            "dispatched_tasks": due,
+            "executed_monitors": executed_monitors,
+            "queued_cloud_tasks": len(pending_cloud_queue),
+        }
 
     def mark_stopped(self, worker_id: str = "cli-user-worker") -> dict[str, Any]:
         return self.db.upsert_worker_heartbeat(

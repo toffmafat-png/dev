@@ -38,6 +38,7 @@ _PROVIDER_KEY_ENV_ALLOWED = {
     "deepseek": {"DEEPSEEK_API_KEY", "NOVA_DEEPSEEK_API_KEY"},
     "mistral": {"MISTRAL_API_KEY", "NOVA_MISTRAL_API_KEY"},
     "ollama": {"OLLAMA_API_KEY", "NOVA_OLLAMA_API_KEY", "LOCAL_OLLAMA"},
+    "llama_cpp": {"LLAMA_CPP_API_KEY", "NOVA_LLAMA_CPP_API_KEY", "LOCAL_LLAMA_CPP"},
 }
 _OFFICIAL_HOSTS = {
     "openai": {"api.openai.com"},
@@ -48,7 +49,9 @@ _OFFICIAL_HOSTS = {
     "deepseek": {"api.deepseek.com"},
     "mistral": {"api.mistral.ai"},
     "ollama": {"localhost", "127.0.0.1", "::1"},
+    "llama_cpp": {"localhost", "127.0.0.1", "::1"},
 }
+_LOCAL_LOOPBACK_PROVIDERS = {"ollama", "llama_cpp"}
 
 
 class ModelManager:
@@ -74,12 +77,36 @@ class ModelManager:
     def _custom_endpoints_allowed(self) -> bool:
         return bool(self.settings.allow_custom_provider_endpoints and self.settings.access_token)
 
+    def _allowed_hosts_for_provider(self, provider_type: str) -> set[str]:
+        hosts = set(_OFFICIAL_HOSTS.get(provider_type, set()))
+        dyn = PROVIDER_CATALOG.get(provider_type) or {}
+        if dyn.get("dynamic") and dyn.get("official_host"):
+            hosts.add(str(dyn["official_host"]).lower())
+        if dyn.get("local_runtime"):
+            hosts.update({"localhost", "127.0.0.1", "::1"})
+        return hosts
+
+    def _allowed_keys_for_provider(self, provider_type: str) -> set[str]:
+        keys = set(_PROVIDER_KEY_ENV_ALLOWED.get(provider_type, set()))
+        dyn = PROVIDER_CATALOG.get(provider_type) or {}
+        if dyn.get("dynamic") and dyn.get("key_env_default"):
+            keys.add(str(dyn["key_env_default"]))
+            keys.add("AI_API_KEY")
+        return keys
+
+    def _is_local_loopback_provider(self, provider_type: str) -> bool:
+        return provider_type in _LOCAL_LOOPBACK_PROVIDERS or bool(
+            (PROVIDER_CATALOG.get(provider_type) or {}).get("local_runtime")
+        )
+
     def _validate_profile_endpoint(self, provider_type: str, value: str) -> str:
         hostname_hint = (urllib.parse.urlsplit(value.strip()).hostname or "").lower()
-        allow_loopback = self.allow_local_http or (provider_type == "ollama" and hostname_hint in {"localhost", "127.0.0.1", "::1"})
+        allow_loopback = self.allow_local_http or (
+            self._is_local_loopback_provider(provider_type) and hostname_hint in {"localhost", "127.0.0.1", "::1"}
+        )
         base_url = validate_base_url(value, allow_loopback)
         hostname = (urllib.parse.urlsplit(base_url).hostname or "").lower()
-        if hostname not in _OFFICIAL_HOSTS.get(provider_type, set()) and not self._custom_endpoints_allowed():
+        if hostname not in self._allowed_hosts_for_provider(provider_type) and not self._custom_endpoints_allowed():
             raise ValueError(
                 "Endpoint host must match the selected provider's official API host. To use a custom compatible endpoint, "
                 "set NOVA_ALLOW_CUSTOM_PROVIDER_ENDPOINTS=true and require NOVA_ACCESS_TOKEN authentication."
@@ -87,11 +114,12 @@ class ModelManager:
         return base_url
 
     def _validate_profile_key_env(self, provider_type: str, value: str) -> str:
-        if provider_type == "ollama" and not value.strip():
+        if self._is_local_loopback_provider(provider_type) and not value.strip():
             return ""
         key_env = validate_key_env(value)
-        if key_env not in _PROVIDER_KEY_ENV_ALLOWED.get(provider_type, set()) and not self._custom_endpoints_allowed():
-            allowed = ", ".join(sorted(_PROVIDER_KEY_ENV_ALLOWED.get(provider_type, set())))
+        allowed_set = self._allowed_keys_for_provider(provider_type)
+        if key_env not in allowed_set and not self._custom_endpoints_allowed():
+            allowed = ", ".join(sorted(allowed_set))
             raise ValueError(f"Credential reference for this provider must be one of: {allowed}. Custom key references require authenticated custom-endpoint mode.")
         return key_env
 
@@ -157,7 +185,7 @@ class ModelManager:
         enabled = bool(profile.get("enabled", True))
         env_name = str(profile.get("api_key_env", ""))
         host_lower = (urllib.parse.urlsplit(str(profile.get("base_url", ""))).hostname or "").lower()
-        local_keyless_ok = profile.get("provider_type") == "ollama" and host_lower in {"localhost", "127.0.0.1", "::1"}
+        local_keyless_ok = self._is_local_loopback_provider(str(profile.get("provider_type", ""))) and host_lower in {"localhost", "127.0.0.1", "::1"}
         key_configured = (
             bool(self.injected_provider)
             or local_keyless_ok
@@ -205,10 +233,14 @@ class ModelManager:
             status = "connected"
         else:
             status = "configured_unverified"
-        calls_total = int(profile.get("calls_total", 0) or 0) if validation_current else 0
-        calls_success = int(profile.get("calls_success", 0) or 0) if validation_current else 0
-        calls_failed = int(profile.get("calls_failed", 0) or 0) if validation_current else 0
-        last_latency = profile.get("last_latency_ms") if validation_current else None
+        usage_current = validation_current or not profile.get("config_fingerprint")
+        calls_total = int(profile.get("calls_total", 0) or 0) if usage_current else 0
+        calls_success = int(profile.get("calls_success", 0) or 0) if usage_current else 0
+        calls_failed = int(profile.get("calls_failed", 0) or 0) if usage_current else 0
+        last_latency = profile.get("last_latency_ms") if usage_current else None
+        last_used = profile.get("last_used_at", "") if usage_current else ""
+        tested_flag = test_state == "inference_ok"
+        actually_used = bool(calls_success > 0 or (calls_total > 0 and last_used))
         return {
             "id": profile["id"],
             "name": profile["name"],
@@ -221,7 +253,15 @@ class ModelManager:
             "configured": configured,
             "connected": connected,
             "available": available,
-            "tested": test_state == "inference_ok",
+            "tested": tested_flag,
+            "actually_used": actually_used,
+            "lifecycle_states": {
+                "configured": configured,
+                "connected": connected,
+                "available": available,
+                "tested": tested_flag,
+                "actually_used": actually_used,
+            },
             "status": status,
             "availability_status": catalog_state,
             "availability_checked_at": profile.get("availability_checked_at", "") if validation_current else "",

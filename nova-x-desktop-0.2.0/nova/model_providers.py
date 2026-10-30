@@ -87,6 +87,16 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "local_runtime": True,
         "note": "Optional local inference over loopback HTTP; checks host RAM before loading large models and needs no API secret on localhost.",
     },
+    "llama_cpp": {
+        "label": "llama.cpp (Optional Compact Quantized Fallback)",
+        "default_base_url": "http://127.0.0.1:8080/v1",
+        "key_env_default": "LLAMA_CPP_API_KEY",
+        "catalog": True,
+        "native_adapter": False,
+        "local_runtime": True,
+        "fallback_only": True,
+        "note": "Optional offline fallback via llama-server over loopback HTTP for compact quantized GGUF models; checks host RAM and blocks enormous models.",
+    },
 }
 
 
@@ -200,6 +210,31 @@ class _HTTPAdapter:
             )
         return key
 
+    async def stream_chat(
+        self,
+        *,
+        api_key_env: str,
+        base_url: str,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        max_output_tokens: int,
+    ):
+        """Fallback chunked stream for adapters without native SSE parsing."""
+        result = await self.chat(
+            api_key_env=api_key_env,
+            base_url=base_url,
+            model_id=model_id,
+            messages=messages,
+            tools=tools,
+            max_output_tokens=max_output_tokens,
+        )
+        msg = result.get("message") if isinstance(result.get("message"), dict) else {}
+        text = str(msg.get("content") or "")
+        for idx in range(0, len(text), 64):
+            yield {"delta": text[idx : idx + 64], "done": False}
+        yield {"delta": "", "done": True, "message": msg, "usage": result.get("usage", {})}
+
 
 class OpenAICompatibleAdapter(_HTTPAdapter):
     token_parameter = "max_tokens"
@@ -208,6 +243,7 @@ class OpenAICompatibleAdapter(_HTTPAdapter):
         self, *, api_key_env: str, base_url: str, model_id: str,
         messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None,
         max_output_tokens: int,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         key = await self._credential(api_key_env)
         base = self._base(base_url)
@@ -215,6 +251,8 @@ class OpenAICompatibleAdapter(_HTTPAdapter):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        if isinstance(response_format, dict) and response_format:
+            payload["response_format"] = response_format
         body = await self._request(
             "POST", f"{base}/chat/completions",
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json", "Accept": "application/json"},
@@ -236,6 +274,82 @@ class OpenAICompatibleAdapter(_HTTPAdapter):
             },
         }
 
+    async def stream_chat(
+        self, *, api_key_env: str, base_url: str, model_id: str,
+        messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None,
+        max_output_tokens: int,
+    ):
+        """§2 Stream Server-Sent Events (SSE) deltas from OpenAI-compatible frontier endpoints."""
+        key = await self._credential(api_key_env)
+        base = self._base(base_url)
+        payload: dict[str, Any] = {
+            "model": model_id,
+            "messages": messages,
+            self.token_parameter: max_output_tokens,
+            "stream": True,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        headers: dict[str, str] = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        timeout = httpx.Timeout(self.timeout_seconds, connect=min(10, self.timeout_seconds))
+        accumulated: list[str] = []
+        usage_final = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+                if hasattr(client, "stream"):
+                    async with client.stream("POST", f"{base}/chat/completions", headers=headers, json=payload) as response:
+                        if response.is_error:
+                            raise ProviderError(_error_text(response.status_code), retryable=response.status_code in {408, 429, 500, 502, 503, 504})
+                        async for raw_line in response.aiter_lines():
+                            line = raw_line.strip()
+                            if not line or not line.startswith("data:"):
+                                continue
+                            data_str = line[5:].strip()
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                event = json.loads(data_str)
+                            except ValueError:
+                                continue
+                            if isinstance(event.get("usage"), dict):
+                                u = event["usage"]
+                                usage_final = {
+                                    "prompt_tokens": _safe_int(u.get("prompt_tokens")),
+                                    "completion_tokens": _safe_int(u.get("completion_tokens")),
+                                    "total_tokens": _safe_int(u.get("total_tokens")),
+                                }
+                            choices = event.get("choices") or []
+                            if choices and isinstance(choices[0], dict):
+                                delta = choices[0].get("delta") or {}
+                                piece = delta.get("content")
+                                if isinstance(piece, str) and piece:
+                                    accumulated.append(piece)
+                                    yield {"delta": piece, "done": False}
+                    full_text = "".join(accumulated)
+                    yield {
+                        "delta": "",
+                        "done": True,
+                        "message": {"role": "assistant", "content": full_text},
+                        "usage": usage_final,
+                    }
+                    return
+        except ProviderError:
+            raise
+        except httpx.HTTPError as exc:
+            raise ProviderError("Streaming provider request failed.", retryable=True) from exc
+        async for item in super().stream_chat(
+            api_key_env=api_key_env,
+            base_url=base_url,
+            model_id=model_id,
+            messages=messages,
+            tools=tools,
+            max_output_tokens=max_output_tokens,
+        ):
+            yield item
+
     async def list_models(self, *, api_key_env: str, base_url: str) -> ModelCatalog:
         key = await self._credential(api_key_env)
         body = await self._request(
@@ -255,8 +369,26 @@ class OpenAIAdapter(OpenAICompatibleAdapter):
     token_parameter = "max_completion_tokens"
 
 
-def check_local_model_resource_fit(model_id: str, available_ram_mb: int | None = None) -> dict[str, Any]:
-    """§18 Estimate quantized RAM requirement for a local model and guard low-spec (~10 GB) machines."""
+MAX_AUTOMATIC_LOCAL_FALLBACK_PARAMS_B = 14.0
+_QUANTIZATION_MB_PER_B: tuple[tuple[re.Pattern[str], str, int], ...] = (
+    (re.compile(r"\b(?:fp32|f32)\b", re.IGNORECASE), "FP32", 4200),
+    (re.compile(r"\b(?:fp16|f16|bf16)\b", re.IGNORECASE), "FP16", 2100),
+    (re.compile(r"\b(?:q8_0|q8)\b", re.IGNORECASE), "Q8_0", 1150),
+    (re.compile(r"\b(?:q6_k|q6)\b", re.IGNORECASE), "Q6_K", 920),
+    (re.compile(r"\b(?:q5_k_m|q5_k_s|q5_0|q5)\b", re.IGNORECASE), "Q5_K_M", 800),
+    (re.compile(r"\b(?:q4_k_m|q4_k_s|q4_0|iq4_xs|q4)\b", re.IGNORECASE), "Q4_K_M", 700),
+    (re.compile(r"\b(?:q3_k_m|q3_k_s|q3)\b", re.IGNORECASE), "Q3_K_M", 560),
+    (re.compile(r"\b(?:q2_k|iq2_xxs|q2)\b", re.IGNORECASE), "Q2_K", 440),
+)
+
+
+def check_local_model_resource_fit(
+    model_id: str,
+    available_ram_mb: int | None = None,
+    *,
+    require_compact_quantized: bool = False,
+) -> dict[str, Any]:
+    """§7 / §18 Estimate quantized RAM requirement for a local model and block enormous models."""
     if available_ram_mb is None:
         available_ram_mb = 8192
         try:
@@ -270,21 +402,51 @@ def check_local_model_resource_fit(model_id: str, available_ram_mb: int | None =
 
     match = re.search(r"(\d+(?:\.\d+)?)\s*[bB]\b", model_id or "")
     params_b = float(match.group(1)) if match else 3.0
-    # ~0.7 GB per billion parameters (Q4_K_M weights + KV cache + runtime overhead)
-    estimated_ram_mb = int(params_b * 700 + 512)
+    quant_label = "Q4_K_M"
+    mb_per_b = 700
+    for pattern, q_name, rate in _QUANTIZATION_MB_PER_B:
+        if pattern.search(model_id or ""):
+            quant_label = q_name
+            mb_per_b = rate
+            break
+
+    is_quantized = quant_label not in {"FP16", "FP32"}
+    is_enormous = params_b > MAX_AUTOMATIC_LOCAL_FALLBACK_PARAMS_B
+    estimated_ram_mb = int(params_b * mb_per_b + 512)
     safe_ceiling_mb = int(available_ram_mb * 0.85)
-    fits = estimated_ram_mb <= safe_ceiling_mb
+    fits_ram = estimated_ram_mb <= safe_ceiling_mb
+
+    if require_compact_quantized and is_enormous:
+        fits = False
+        reason = (
+            f"Model '{model_id}' ({params_b:g}B parameters) exceeds compact local fallback ceiling "
+            f"({MAX_AUTOMATIC_LOCAL_FALLBACK_PARAMS_B:g}B max); DEV never automatically runs enormous models locally."
+        )
+    elif require_compact_quantized and not is_quantized:
+        fits = False
+        reason = (
+            f"Model '{model_id}' uses unquantized weights ({quant_label}); local fallback requires compact quantized models (e.g. Q4_K_M)."
+        )
+    elif not fits_ram:
+        fits = False
+        reason = (
+            f"Model '{model_id}' (~{estimated_ram_mb} MB est., {quant_label}) exceeds safe local RAM ceiling ({safe_ceiling_mb} MB available)."
+        )
+    else:
+        fits = True
+        reason = "Fits local memory budget."
+
     return {
         "model_id": model_id,
         "estimated_parameters_b": params_b,
+        "quantization": quant_label,
+        "is_quantized": is_quantized,
+        "is_enormous": is_enormous,
         "estimated_ram_mb": estimated_ram_mb,
         "available_ram_mb": available_ram_mb,
+        "safe_ceiling_mb": safe_ceiling_mb,
         "fits_resource_budget": fits,
-        "reason": (
-            "Fits local memory budget."
-            if fits
-            else f"Model '{model_id}' (~{estimated_ram_mb} MB est.) exceeds safe local RAM ceiling ({safe_ceiling_mb} MB available)."
-        ),
+        "reason": reason,
     }
 
 
@@ -361,6 +523,49 @@ class OllamaAdapter(OpenAICompatibleAdapter):
             ],
             complete=True,
         )
+
+
+class LlamaCppAdapter(OllamaAdapter):
+    """§7 Optional compact quantized local fallback adapter for llama.cpp (llama-server)."""
+
+    async def chat(
+        self,
+        *,
+        api_key_env: str,
+        base_url: str,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        max_output_tokens: int,
+    ) -> dict[str, Any]:
+        fit = check_local_model_resource_fit(model_id, require_compact_quantized=True)
+        if not fit["fits_resource_budget"] and os.getenv("NOVA_FORCE_LARGE_LOCAL_MODEL", "").lower() not in {"1", "true"}:
+            raise ProviderConfigurationError(fit["reason"])
+        key = await self._credential(api_key_env)
+        base = self._base(base_url)
+        payload: dict[str, Any] = {"model": model_id, "messages": messages, self.token_parameter: max_output_tokens}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        body = await self._request("POST", f"{base}/chat/completions", headers=headers, json_body=payload)
+        try:
+            message = body["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ProviderError("Local llama.cpp response did not contain a Chat Completions message.") from exc
+        if not isinstance(message, dict):
+            raise ProviderError("Local llama.cpp returned an invalid message.")
+        usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+        return {
+            "message": message,
+            "usage": {
+                "prompt_tokens": _safe_int(usage.get("prompt_tokens")),
+                "completion_tokens": _safe_int(usage.get("completion_tokens")),
+                "total_tokens": _safe_int(usage.get("total_tokens")),
+            },
+        }
 
 
 class AnthropicAdapter(_HTTPAdapter):
@@ -587,9 +792,53 @@ _ADAPTERS = {
     "deepseek": OpenAICompatibleAdapter,
     "mistral": OpenAICompatibleAdapter,
     "ollama": OllamaAdapter,
+    "llama_cpp": LlamaCppAdapter,
     "anthropic": AnthropicAdapter,
     "gemini": GeminiAdapter,
 }
+
+_BUILTIN_PROVIDERS = frozenset(PROVIDER_CATALOG.keys())
+_PROVIDER_SLUG_RE = re.compile(r"^[a-z][a-z0-9_]{1,47}$")
+
+
+def register_dynamic_provider_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    """§2 Register an extensible frontier or local-fallback provider into PROVIDER_CATALOG at runtime."""
+    ptype = str(spec.get("provider_type") or "").strip().lower()
+    if not _PROVIDER_SLUG_RE.fullmatch(ptype):
+        raise ValueError("provider_type must match ^[a-z][a-z0-9_]{1,47}$.")
+    if ptype in _BUILTIN_PROVIDERS:
+        raise ValueError(f"Cannot overwrite built-in provider '{ptype}'.")
+    family = str(spec.get("adapter_family") or "openai_compatible").strip().lower()
+    if family not in _ADAPTERS:
+        raise ValueError(f"Unsupported adapter_family '{family}'.")
+    local_only = bool(spec.get("local_only", False))
+    base_url = validate_base_url(str(spec.get("default_base_url") or ""), allow_local_http=local_only)
+    key_env = str(spec.get("default_key_env") or "AI_API_KEY").strip()
+    if key_env:
+        key_env = validate_key_env(key_env)
+    entry = {
+        "label": str(spec.get("label") or ptype),
+        "default_base_url": base_url,
+        "key_env_default": key_env or "AI_API_KEY",
+        "catalog": True,
+        "native_adapter": family in {"anthropic", "gemini"},
+        "local_runtime": local_only,
+        "dynamic": True,
+        "official_host": (urllib.parse.urlsplit(base_url).hostname or "").lower(),
+        "note": str(spec.get("note") or "Dynamically registered provider surface."),
+    }
+    PROVIDER_CATALOG[ptype] = entry
+    _ADAPTERS[ptype] = _ADAPTERS[family]
+    return {"provider_type": ptype, **entry}
+
+
+def unregister_dynamic_provider_spec(provider_type: str) -> bool:
+    ptype = provider_type.strip().lower()
+    if ptype in _BUILTIN_PROVIDERS:
+        return False
+    removed = PROVIDER_CATALOG.pop(ptype, None) is not None
+    _ADAPTERS.pop(ptype, None)
+    return removed
 
 
 def create_adapter(

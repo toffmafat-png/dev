@@ -764,6 +764,72 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_research_monitors_enabled ON research_monitors(enabled, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS dynamic_provider_specs (
+                    provider_type TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    default_base_url TEXT NOT NULL,
+                    default_key_env TEXT NOT NULL DEFAULT '',
+                    adapter_family TEXT NOT NULL DEFAULT 'openai_compatible',
+                    official_host TEXT NOT NULL DEFAULT '',
+                    local_only INTEGER NOT NULL DEFAULT 0,
+                    supports_streaming INTEGER NOT NULL DEFAULT 1,
+                    supports_structured_outputs INTEGER NOT NULL DEFAULT 1,
+                    supports_tools INTEGER NOT NULL DEFAULT 1,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS provider_privacy_policies (
+                    provider_type TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    max_payload_chars INTEGER NOT NULL DEFAULT 24000,
+                    allow_diagnostic_context INTEGER NOT NULL DEFAULT 1,
+                    allow_file_excerpts INTEGER NOT NULL DEFAULT 1,
+                    require_sensitive_transfer_approval INTEGER NOT NULL DEFAULT 1,
+                    allowed_categories_json TEXT NOT NULL DEFAULT '["prompt","diagnostics","workspace_excerpt"]',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS local_only_projects (
+                    project_key TEXT PRIMARY KEY,
+                    project_path TEXT NOT NULL,
+                    local_only INTEGER NOT NULL DEFAULT 1,
+                    allow_quantized_local_fallback INTEGER NOT NULL DEFAULT 1,
+                    reason TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cloud_transmission_ledger (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL DEFAULT '',
+                    provider_type TEXT NOT NULL,
+                    model_id TEXT NOT NULL DEFAULT '',
+                    endpoint_host TEXT NOT NULL DEFAULT '',
+                    decision TEXT NOT NULL,
+                    payload_chars INTEGER NOT NULL DEFAULT 0,
+                    redacted_items_count INTEGER NOT NULL DEFAULT 0,
+                    included_files_json TEXT NOT NULL DEFAULT '[]',
+                    included_categories_json TEXT NOT NULL DEFAULT '[]',
+                    reason TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_transmission_ledger_time ON cloud_transmission_ledger(created_at DESC);
+                CREATE TABLE IF NOT EXISTS offline_cloud_queue (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL DEFAULT '',
+                    goal TEXT NOT NULL,
+                    mode TEXT NOT NULL DEFAULT 'balanced',
+                    messages_json TEXT NOT NULL DEFAULT '[]',
+                    requested_model_ids_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'queued_waiting_cloud',
+                    checkpoint_id TEXT NOT NULL DEFAULT '',
+                    idempotency_key TEXT NOT NULL DEFAULT '',
+                    local_fallback_allowed INTEGER NOT NULL DEFAULT 0,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_offline_cloud_queue_status ON offline_cloud_queue(status, created_at ASC);
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -3677,3 +3743,320 @@ class Database:
         with self._lock, self._connect() as conn:
             cur = conn.execute("DELETE FROM research_monitors WHERE id = ?", (monitor_id,))
             return cur.rowcount > 0
+
+    # --- Corrected Master Architecture (§2, §5, §6): Dynamic Providers, Privacy Gateway & Offline Cloud Queue ---
+
+    def upsert_dynamic_provider_spec(self, item: dict[str, Any]) -> dict[str, Any]:
+        ptype = str(item.get("provider_type") or "").strip().lower()
+        if not ptype:
+            raise ValueError("provider_type is required.")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO dynamic_provider_specs (
+                    provider_type, label, default_base_url, default_key_env,
+                    adapter_family, official_host, local_only,
+                    supports_streaming, supports_structured_outputs, supports_tools,
+                    metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider_type) DO UPDATE SET
+                    label = excluded.label,
+                    default_base_url = excluded.default_base_url,
+                    default_key_env = excluded.default_key_env,
+                    adapter_family = excluded.adapter_family,
+                    official_host = excluded.official_host,
+                    local_only = excluded.local_only,
+                    supports_streaming = excluded.supports_streaming,
+                    supports_structured_outputs = excluded.supports_structured_outputs,
+                    supports_tools = excluded.supports_tools,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    ptype[:64],
+                    str(item.get("label") or ptype)[:120],
+                    str(item.get("default_base_url") or "")[:300],
+                    str(item.get("default_key_env") or "")[:64],
+                    str(item.get("adapter_family") or "openai_compatible")[:48],
+                    str(item.get("official_host") or "")[:200],
+                    1 if item.get("local_only") else 0,
+                    1 if item.get("supports_streaming", True) else 0,
+                    1 if item.get("supports_structured_outputs", True) else 0,
+                    1 if item.get("supports_tools", True) else 0,
+                    _dump(item.get("metadata") or {}),
+                    now,
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM dynamic_provider_specs WHERE provider_type = ?", (ptype,)).fetchone()
+        return self._unpack_dynamic_provider_spec(r) if r else {}
+
+    @staticmethod
+    def _unpack_dynamic_provider_spec(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        for flag in ("local_only", "supports_streaming", "supports_structured_outputs", "supports_tools"):
+            d[flag] = bool(d[flag])
+        d["metadata"] = json.loads(d.pop("metadata_json") or "{}")
+        return d
+
+    def list_dynamic_provider_specs(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM dynamic_provider_specs ORDER BY provider_type ASC").fetchall()
+        return [self._unpack_dynamic_provider_spec(r) for r in rows]
+
+    def delete_dynamic_provider_spec(self, provider_type: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute("DELETE FROM dynamic_provider_specs WHERE provider_type = ?", (provider_type.strip().lower(),))
+            return cur.rowcount > 0
+
+    def upsert_provider_privacy_policy(self, item: dict[str, Any]) -> dict[str, Any]:
+        ptype = str(item.get("provider_type") or "").strip().lower()
+        if not ptype:
+            raise ValueError("provider_type is required.")
+        now = utc_now()
+        categories = item.get("allowed_categories")
+        if not isinstance(categories, list):
+            categories = ["prompt", "diagnostics", "workspace_excerpt"]
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO provider_privacy_policies (
+                    provider_type, enabled, max_payload_chars,
+                    allow_diagnostic_context, allow_file_excerpts,
+                    require_sensitive_transfer_approval, allowed_categories_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider_type) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    max_payload_chars = excluded.max_payload_chars,
+                    allow_diagnostic_context = excluded.allow_diagnostic_context,
+                    allow_file_excerpts = excluded.allow_file_excerpts,
+                    require_sensitive_transfer_approval = excluded.require_sensitive_transfer_approval,
+                    allowed_categories_json = excluded.allowed_categories_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    ptype[:64],
+                    1 if item.get("enabled", True) else 0,
+                    max(256, min(int(item.get("max_payload_chars", 24000)), 500000)),
+                    1 if item.get("allow_diagnostic_context", True) else 0,
+                    1 if item.get("allow_file_excerpts", True) else 0,
+                    1 if item.get("require_sensitive_transfer_approval", True) else 0,
+                    _dump([str(c)[:64] for c in categories]),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM provider_privacy_policies WHERE provider_type = ?", (ptype,)).fetchone()
+        return self._unpack_provider_privacy_policy(r) if r else {}
+
+    @staticmethod
+    def _unpack_provider_privacy_policy(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        for flag in ("enabled", "allow_diagnostic_context", "allow_file_excerpts", "require_sensitive_transfer_approval"):
+            d[flag] = bool(d[flag])
+        d["allowed_categories"] = json.loads(d.pop("allowed_categories_json") or "[]")
+        return d
+
+    def get_provider_privacy_policy(self, provider_type: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute(
+                "SELECT * FROM provider_privacy_policies WHERE provider_type = ?",
+                (provider_type.strip().lower(),),
+            ).fetchone()
+        return self._unpack_provider_privacy_policy(r) if r else None
+
+    def list_provider_privacy_policies(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM provider_privacy_policies ORDER BY provider_type ASC").fetchall()
+        return [self._unpack_provider_privacy_policy(r) for r in rows]
+
+    def upsert_local_only_project(self, item: dict[str, Any]) -> dict[str, Any]:
+        pkey = str(item.get("project_key") or "").strip()
+        if not pkey:
+            raise ValueError("project_key is required.")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO local_only_projects (
+                    project_key, project_path, local_only,
+                    allow_quantized_local_fallback, reason, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_key) DO UPDATE SET
+                    project_path = excluded.project_path,
+                    local_only = excluded.local_only,
+                    allow_quantized_local_fallback = excluded.allow_quantized_local_fallback,
+                    reason = excluded.reason,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    pkey[:120],
+                    str(item.get("project_path") or pkey)[:500],
+                    1 if item.get("local_only", True) else 0,
+                    1 if item.get("allow_quantized_local_fallback", True) else 0,
+                    str(item.get("reason") or "")[:400],
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM local_only_projects WHERE project_key = ?", (pkey,)).fetchone()
+        return self._unpack_local_only_project(r) if r else {}
+
+    @staticmethod
+    def _unpack_local_only_project(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["local_only"] = bool(d["local_only"])
+        d["allow_quantized_local_fallback"] = bool(d["allow_quantized_local_fallback"])
+        return d
+
+    def get_local_only_project(self, project_key: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM local_only_projects WHERE project_key = ?", (project_key.strip(),)).fetchone()
+        return self._unpack_local_only_project(r) if r else None
+
+    def list_local_only_projects(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM local_only_projects ORDER BY updated_at DESC").fetchall()
+        return [self._unpack_local_only_project(r) for r in rows]
+
+    def delete_local_only_project(self, project_key: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute("DELETE FROM local_only_projects WHERE project_key = ?", (project_key.strip(),))
+            return cur.rowcount > 0
+
+    def record_cloud_transmission(self, item: dict[str, Any]) -> dict[str, Any]:
+        tid = str(item.get("id") or f"ctxm-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        files = [str(f)[:300] for f in (item.get("included_files") or []) if str(f).strip()]
+        cats = [str(c)[:80] for c in (item.get("included_categories") or []) if str(c).strip()]
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO cloud_transmission_ledger (
+                    id, task_id, provider_type, model_id, endpoint_host,
+                    decision, payload_chars, redacted_items_count,
+                    included_files_json, included_categories_json, reason, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tid,
+                    str(item.get("task_id") or "")[:120],
+                    str(item.get("provider_type") or "")[:64],
+                    str(item.get("model_id") or "")[:120],
+                    str(item.get("endpoint_host") or "")[:200],
+                    str(item.get("decision") or "blocked")[:40],
+                    max(0, int(item.get("payload_chars") or 0)),
+                    max(0, int(item.get("redacted_items_count") or 0)),
+                    _dump(files),
+                    _dump(cats),
+                    str(item.get("reason") or "")[:500],
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cloud_transmission_ledger WHERE id = ?", (tid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["included_files"] = json.loads(d.pop("included_files_json") or "[]")
+        d["included_categories"] = json.loads(d.pop("included_categories_json") or "[]")
+        return d
+
+    def list_cloud_transmissions(self, *, task_id: str = "", provider_type: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if task_id:
+            clauses.append("task_id = ?")
+            params.append(task_id.strip())
+        if provider_type:
+            clauses.append("provider_type = ?")
+            params.append(provider_type.strip().lower())
+        sql = "SELECT * FROM cloud_transmission_ledger"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["included_files"] = json.loads(d.pop("included_files_json") or "[]")
+            d["included_categories"] = json.loads(d.pop("included_categories_json") or "[]")
+            out.append(d)
+        return out
+
+    def enqueue_offline_cloud_task(self, item: dict[str, Any]) -> dict[str, Any]:
+        qid = str(item.get("id") or f"ocq-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO offline_cloud_queue (
+                    id, task_id, goal, mode, messages_json, requested_model_ids_json,
+                    status, checkpoint_id, idempotency_key, local_fallback_allowed,
+                    attempt_count, last_error, result_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    qid,
+                    str(item.get("task_id") or "")[:120],
+                    str(item.get("goal") or "")[:4000],
+                    str(item.get("mode") or "balanced")[:48],
+                    _dump(item.get("messages") or []),
+                    _dump(item.get("requested_model_ids") or []),
+                    str(item.get("status") or "queued_waiting_cloud")[:48],
+                    str(item.get("checkpoint_id") or "")[:120],
+                    str(item.get("idempotency_key") or "")[:160],
+                    1 if item.get("local_fallback_allowed") else 0,
+                    max(0, int(item.get("attempt_count") or 0)),
+                    str(item.get("last_error") or "")[:1000],
+                    _dump(item.get("result") or {}),
+                    now,
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM offline_cloud_queue WHERE id = ?", (qid,)).fetchone()
+        return self._unpack_offline_cloud_task(r) if r else {}
+
+    @staticmethod
+    def _unpack_offline_cloud_task(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["local_fallback_allowed"] = bool(d["local_fallback_allowed"])
+        d["messages"] = json.loads(d.pop("messages_json") or "[]")
+        d["requested_model_ids"] = json.loads(d.pop("requested_model_ids_json") or "[]")
+        d["result"] = json.loads(d.pop("result_json") or "{}")
+        return d
+
+    def update_offline_cloud_task(self, queue_id: str, **updates: Any) -> dict[str, Any] | None:
+        allowed_scalar = {"status", "checkpoint_id", "attempt_count", "last_error"}
+        sets: list[str] = ["updated_at = ?"]
+        params: list[Any] = [utc_now()]
+        for key, value in updates.items():
+            if key in allowed_scalar:
+                sets.append(f"{key} = ?")
+                params.append(value)
+            elif key == "result":
+                sets.append("result_json = ?")
+                params.append(_dump(value or {}))
+        params.append(queue_id)
+        with self._lock, self._connect() as conn:
+            conn.execute(f"UPDATE offline_cloud_queue SET {', '.join(sets)} WHERE id = ?", params)
+            r = conn.execute("SELECT * FROM offline_cloud_queue WHERE id = ?", (queue_id,)).fetchone()
+        return self._unpack_offline_cloud_task(r) if r else None
+
+    def get_offline_cloud_task(self, queue_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM offline_cloud_queue WHERE id = ?", (queue_id,)).fetchone()
+        return self._unpack_offline_cloud_task(r) if r else None
+
+    def list_offline_cloud_tasks(self, *, status: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM offline_cloud_queue"
+        params: list[Any] = []
+        if status:
+            sql += " WHERE status = ?"
+            params.append(status.strip())
+        sql += " ORDER BY created_at ASC LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._unpack_offline_cloud_task(r) for r in rows]
+
