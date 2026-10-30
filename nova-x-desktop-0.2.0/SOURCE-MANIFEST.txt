@@ -13,6 +13,7 @@ Contents:
   docs/EXTENSION_SDK.md
   docs/FEATURE_MATRIX.md
   docs/INTEGRATIONS.md
+  docs/KALI_INTELLIGENCE_LAYER.md
   docs/NATIVE_DESKTOP.md
   docs/PLATFORM_ARCHITECTURE.md
   docs/PRIVACY_INTEL.md
@@ -70,6 +71,15 @@ Contents:
   nova/hybrid_cloud/privacy_gateway.py
   nova/hybrid_cloud/service.py
   nova/intelligence.py
+  nova/kali_intel/__init__.py
+  nova/kali_intel/acceptance.py
+  nova/kali_intel/community_and_research.py
+  nova/kali_intel/cyber_labs_and_education.py
+  nova/kali_intel/dev_env_and_evolution.py
+  nova/kali_intel/service.py
+  nova/kali_intel/system_model.py
+  nova/kali_intel/tool_and_doc_engine.py
+  nova/kali_intel/universal_apps_and_chaining.py
   nova/knowledge.py
   nova/main.py
   nova/mcp_client.py
@@ -104,6 +114,7 @@ Contents:
   nova/tools/__init__.py
   nova/tools/calculator.py
   nova/tools/creation.py
+  nova/tools/kali_intel.py
   nova/tools/privacy_intel.py
   nova/tools/registry.py
   nova/tools/research.py
@@ -144,6 +155,7 @@ Contents:
   tests/test_goals.py
   tests/test_integration_matrix.py
   tests/test_intelligence.py
+  tests/test_kali_intelligence.py
   tests/test_model_providers.py
   tests/test_platform_stack.py
   tests/test_privacy_intel_module.py
@@ -193,6 +205,11 @@ Notes:
     documented in docs/CORRECTED_MASTER_ARCHITECTURE.md and verified by
     `python -m nova.hybrid_cloud.acceptance` (15 acceptance gates) and
     tests/test_corrected_master_architecture.py.
+  * The §181–§200 Advanced Kali Linux Intelligence, Application Mastery, and
+    Universal Software Integration Layer lives in nova/kali_intel/ and
+    nova/tools/kali_intel.py, documented in docs/KALI_INTELLIGENCE_LAYER.md and
+    verified by `python -m nova.kali_intel.acceptance` (18 acceptance checks)
+    and tests/test_kali_intelligence.py.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).

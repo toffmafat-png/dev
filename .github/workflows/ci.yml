@@ -103,6 +103,9 @@ jobs:
       - name: Corrected Master Hybrid Architecture Acceptance (§1-§11)
         run: python -m nova.hybrid_cloud.acceptance
 
+      - name: Final Kali Expertise Acceptance (§200)
+        run: python -m nova.kali_intel.acceptance
+
       - name: Pytest (full suite)
         run: python -m pytest -q
 

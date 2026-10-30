@@ -1975,6 +1975,9 @@ class NovaWindow(QMainWindow):
         diag_btn = QPushButton("Run driver & firmware check")
         diag_btn.clicked.connect(self._infra_diagnose_drivers)
         search_row.addWidget(diag_btn)
+        kali_btn = QPushButton("Kali Intelligence probe (§181–§200)")
+        kali_btn.clicked.connect(self._infra_kali_probe)
+        search_row.addWidget(kali_btn)
         hw_card.addLayout(search_row)
         self.infra_hw_box = _read_only_text(170)
         hw_card.addWidget(self.infra_hw_box)
@@ -2019,8 +2022,19 @@ class NovaWindow(QMainWindow):
             f"Startup Policy ({spol['current_user']}): auto_restore_tasks={spol['policy']['auto_restore_interrupted_tasks']} · user_worker_login={spol['policy']['start_user_worker_at_login']}",
             f"Registered SSH Servers ({len(srvs)}): " + (", ".join(f"{s['alias']} ({s['hostname']}:{s['port']} · {s['connection_health']})" for s in srvs) or "none configured"),
             f"Screen Studio Recordings: {len(snap['recordings'])} saved session(s) · session_type={snap['recording_session']['session_type']}",
+            f"Kali Intelligence (§181–§200): profiles={self.runtime.kali_intel.status_summary()['indexed_tool_and_app_profiles']} · docs={self.runtime.kali_intel.status_summary()['indexed_knowledge_documents']} · labs={self.runtime.kali_intel.status_summary()['managed_cyber_labs']}",
         ]
         self.infra_ops_box.setPlainText("\n".join(ops_lines))
+
+    def _infra_kali_probe(self) -> None:
+        q = self.infra_hw_search.text().strip() or "inspect network traffic"
+        sys_res = self.runtime.kali_intel.system_model.get_or_refresh_model()
+        search_res = self.runtime.kali_intel.tool_engine.search_tools_for_objective(q)
+        self.infra_hw_box.appendPlainText(
+            f"\n[Kali Intelligence · {sys_res['model']['distribution']['pretty_name']}] "
+            f"objective='{q}' -> recommended={search_res['recommended_tool']} "
+            f"(installed_matches={search_res['installed_candidates_count']})"
+        )
 
     def _infra_diagnose_drivers(self) -> None:
         q = self.infra_hw_search.text().strip()
