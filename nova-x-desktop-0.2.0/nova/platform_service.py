@@ -17,6 +17,7 @@ from nova.capabilities import CapabilityRegistry, prioritize, recommendation_cat
 from nova.config import Settings
 from nova.context_manager import ContextOptimizer
 from nova.creation.engine import UniversalCreationEngine
+from nova.cyber_division.service import CybersecurityEngineeringDivision
 from nova.data_workspace import DataWorkspace
 from nova.db import Database
 from nova.desktop_control import LinuxDesktopController, build_desktop_control_tools
@@ -44,6 +45,7 @@ from nova.self_improvement import ControlledImprovementEngine
 from nova.system_access.service import SystemAccessService
 from nova.terminal import TerminalWorkspace
 from nova.tools.creation import build_creation_tools
+from nova.tools.cyber_division import build_cyber_division_tools
 from nova.tools.kali_intel import build_kali_intel_tools
 from nova.tools.privacy_intel import build_privacy_intel_tools
 from nova.tools.registry import ToolRegistry
@@ -315,6 +317,17 @@ class PlatformService:
         for ki_tool in build_kali_intel_tools(lambda: self.kali_intel):
             if self.tools.get(ki_tool.name) is None:
                 self.tools.register(ki_tool)
+        self.cyber_division = CybersecurityEngineeringDivision(
+            db=self.db,
+            workspace_dir=workspace_dir,
+            kali_intel=self.kali_intel,
+            knowledge_store=self.knowledge,
+            tool_registry=self.tools,
+            hybrid_cloud=self.hybrid_cloud,
+        )
+        for cy_tool in build_cyber_division_tools(lambda: self.cyber_division):
+            if self.tools.get(cy_tool.name) is None:
+                self.tools.register(cy_tool)
 
     def _register_baseline_integrations(self) -> None:
         self.gateway.register(

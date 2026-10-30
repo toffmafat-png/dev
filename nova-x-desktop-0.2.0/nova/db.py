@@ -915,6 +915,119 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_kali_expertise_domain ON kali_expertise_revisions(domain, status, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS cyber_security_scopes (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    scope_category TEXT NOT NULL DEFAULT 'development_environment',
+                    targets_json TEXT NOT NULL DEFAULT '[]',
+                    excluded_targets_json TEXT NOT NULL DEFAULT '[]',
+                    ownership_evidence TEXT NOT NULL DEFAULT '',
+                    permitted_activities_json TEXT NOT NULL DEFAULT '[]',
+                    allowed_windows_json TEXT NOT NULL DEFAULT '[]',
+                    rate_limit_rpm INTEGER NOT NULL DEFAULT 60,
+                    permitted_protocols_json TEXT NOT NULL DEFAULT '[]',
+                    data_restrictions_json TEXT NOT NULL DEFAULT '{}',
+                    expires_at TEXT NOT NULL DEFAULT '',
+                    reporting_requirements TEXT NOT NULL DEFAULT '',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cyber_attack_surface_assets (
+                    asset_id TEXT PRIMARY KEY,
+                    address_or_host TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'host',
+                    scope_id TEXT NOT NULL DEFAULT '',
+                    scope_status TEXT NOT NULL DEFAULT 'in_scope',
+                    services_json TEXT NOT NULL DEFAULT '[]',
+                    software_versions_json TEXT NOT NULL DEFAULT '{}',
+                    vulnerabilities_json TEXT NOT NULL DEFAULT '[]',
+                    confidence REAL NOT NULL DEFAULT 0.9,
+                    fingerprint_sha256 TEXT NOT NULL DEFAULT '',
+                    remediation_history_json TEXT NOT NULL DEFAULT '[]',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    last_observed_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_cyber_assets_scope ON cyber_attack_surface_assets(scope_id, last_observed_at DESC);
+                CREATE TABLE IF NOT EXISTS cyber_vulnerability_findings (
+                    id TEXT PRIMARY KEY,
+                    vuln_identifier TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL,
+                    epistemic_status TEXT NOT NULL DEFAULT 'potential_vulnerability',
+                    lifecycle_state TEXT NOT NULL DEFAULT 'Discovered',
+                    affected_asset TEXT NOT NULL,
+                    affected_software TEXT NOT NULL DEFAULT '',
+                    severity TEXT NOT NULL DEFAULT 'medium',
+                    confidence REAL NOT NULL DEFAULT 0.7,
+                    priority_score REAL NOT NULL DEFAULT 50.0,
+                    exposure TEXT NOT NULL DEFAULT 'local_only',
+                    exploitability_info TEXT NOT NULL DEFAULT '',
+                    business_impact TEXT NOT NULL DEFAULT '',
+                    existing_mitigations_json TEXT NOT NULL DEFAULT '[]',
+                    evidence_json TEXT NOT NULL DEFAULT '{}',
+                    prerequisites TEXT NOT NULL DEFAULT '',
+                    recommended_correction TEXT NOT NULL DEFAULT '',
+                    remediation_status TEXT NOT NULL DEFAULT 'pending',
+                    retest_result_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_cyber_findings_prio ON cyber_vulnerability_findings(priority_score DESC, lifecycle_state);
+                CREATE TABLE IF NOT EXISTS cyber_research_dossiers (
+                    id TEXT PRIMARY KEY,
+                    identifier TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    cvss_score REAL,
+                    cwe_id TEXT NOT NULL DEFAULT '',
+                    dossier_json TEXT NOT NULL DEFAULT '{}',
+                    sources_json TEXT NOT NULL DEFAULT '[]',
+                    confidence REAL NOT NULL DEFAULT 0.85,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cyber_incident_cases (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    severity TEXT NOT NULL DEFAULT 'medium',
+                    status TEXT NOT NULL DEFAULT 'open',
+                    confirmed_evidence_json TEXT NOT NULL DEFAULT '[]',
+                    suspected_activity_json TEXT NOT NULL DEFAULT '[]',
+                    timeline_json TEXT NOT NULL DEFAULT '[]',
+                    checklist_json TEXT NOT NULL DEFAULT '{}',
+                    preserved_artifacts_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cyber_generated_tools (
+                    tool_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    purpose TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'validated',
+                    script_path TEXT NOT NULL DEFAULT '',
+                    test_result_json TEXT NOT NULL DEFAULT '{}',
+                    permissions_json TEXT NOT NULL DEFAULT '{}',
+                    rollback_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cyber_recurring_assessments (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    workflow_kind TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    interval_minutes INTEGER NOT NULL DEFAULT 60,
+                    rate_limit_rpm INTEGER NOT NULL DEFAULT 30,
+                    credentials_valid INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    pause_reason TEXT NOT NULL DEFAULT '',
+                    run_count INTEGER NOT NULL DEFAULT 0,
+                    last_report_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -4529,5 +4642,496 @@ class Database:
         with self._lock, self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._unpack_kali_expertise_revision(r) for r in rows]
+
+    # --- Sections 201–220: Autonomous Cybersecurity, Vulnerability Research & Security Engineering Division ---
+
+    def upsert_cyber_scope(self, item: dict[str, Any]) -> dict[str, Any]:
+        sid = str(item.get("id") or f"cscope-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO cyber_security_scopes (
+                    id, name, scope_category, targets_json, excluded_targets_json,
+                    ownership_evidence, permitted_activities_json, allowed_windows_json,
+                    rate_limit_rpm, permitted_protocols_json, data_restrictions_json,
+                    expires_at, reporting_requirements, active, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    scope_category = excluded.scope_category,
+                    targets_json = excluded.targets_json,
+                    excluded_targets_json = excluded.excluded_targets_json,
+                    ownership_evidence = excluded.ownership_evidence,
+                    permitted_activities_json = excluded.permitted_activities_json,
+                    allowed_windows_json = excluded.allowed_windows_json,
+                    rate_limit_rpm = excluded.rate_limit_rpm,
+                    permitted_protocols_json = excluded.permitted_protocols_json,
+                    data_restrictions_json = excluded.data_restrictions_json,
+                    expires_at = excluded.expires_at,
+                    reporting_requirements = excluded.reporting_requirements,
+                    active = excluded.active,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    sid[:80],
+                    str(item.get("name") or sid)[:160],
+                    str(item.get("scope_category") or "development_environment")[:80],
+                    _dump(item.get("targets") or []),
+                    _dump(item.get("excluded_targets") or []),
+                    str(item.get("ownership_evidence") or "")[:500],
+                    _dump(item.get("permitted_activities") or []),
+                    _dump(item.get("allowed_windows") or ["always"]),
+                    max(1, min(int(item.get("rate_limit_rpm") or 60), 10000)),
+                    _dump(item.get("permitted_protocols") or ["tcp", "http", "https", "local_fs"]),
+                    _dump(item.get("data_restrictions") or {}),
+                    str(item.get("expires_at") or ""),
+                    str(item.get("reporting_requirements") or "")[:500],
+                    1 if item.get("active", True) else 0,
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_security_scopes WHERE id = ?", (sid[:80],)).fetchone()
+        return self._unpack_cyber_scope(r) if r else {}
+
+    @staticmethod
+    def _unpack_cyber_scope(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["active"] = bool(d["active"])
+        d["targets"] = json.loads(d.pop("targets_json") or "[]")
+        d["excluded_targets"] = json.loads(d.pop("excluded_targets_json") or "[]")
+        d["permitted_activities"] = json.loads(d.pop("permitted_activities_json") or "[]")
+        d["allowed_windows"] = json.loads(d.pop("allowed_windows_json") or "[]")
+        d["permitted_protocols"] = json.loads(d.pop("permitted_protocols_json") or "[]")
+        d["data_restrictions"] = json.loads(d.pop("data_restrictions_json") or "{}")
+        return d
+
+    def get_cyber_scope(self, scope_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM cyber_security_scopes WHERE id = ?", (scope_id,)).fetchone()
+        return self._unpack_cyber_scope(r) if r else None
+
+    def list_cyber_scopes(self, *, active_only: bool = False) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM cyber_security_scopes"
+        if active_only:
+            sql += " WHERE active = 1"
+        sql += " ORDER BY updated_at DESC"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [self._unpack_cyber_scope(r) for r in rows]
+
+    def upsert_cyber_asset(self, item: dict[str, Any]) -> dict[str, Any]:
+        aid = str(item.get("asset_id") or f"asset-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            prev = conn.execute(
+                "SELECT fingerprint_sha256 FROM cyber_attack_surface_assets WHERE asset_id = ?",
+                (aid[:120],),
+            ).fetchone()
+            new_fp = str(item.get("fingerprint_sha256") or "")[:128]
+            changed = prev is None or str(prev["fingerprint_sha256"]) != new_fp
+            conn.execute(
+                """
+                INSERT INTO cyber_attack_surface_assets (
+                    asset_id, address_or_host, category, scope_id, scope_status,
+                    services_json, software_versions_json, vulnerabilities_json,
+                    confidence, fingerprint_sha256, remediation_history_json,
+                    metadata_json, last_observed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(asset_id) DO UPDATE SET
+                    address_or_host = excluded.address_or_host,
+                    category = excluded.category,
+                    scope_id = excluded.scope_id,
+                    scope_status = excluded.scope_status,
+                    services_json = excluded.services_json,
+                    software_versions_json = excluded.software_versions_json,
+                    vulnerabilities_json = excluded.vulnerabilities_json,
+                    confidence = excluded.confidence,
+                    fingerprint_sha256 = excluded.fingerprint_sha256,
+                    remediation_history_json = excluded.remediation_history_json,
+                    metadata_json = excluded.metadata_json,
+                    last_observed_at = excluded.last_observed_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    aid[:120],
+                    str(item.get("address_or_host") or "")[:240],
+                    str(item.get("category") or "host")[:64],
+                    str(item.get("scope_id") or "")[:80],
+                    str(item.get("scope_status") or "in_scope")[:40],
+                    _dump(item.get("services") or []),
+                    _dump(item.get("software_versions") or {}),
+                    _dump(item.get("vulnerabilities") or []),
+                    float(item.get("confidence", 0.9)),
+                    new_fp,
+                    _dump(item.get("remediation_history") or []),
+                    _dump(item.get("metadata") or {}),
+                    now,
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_attack_surface_assets WHERE asset_id = ?", (aid[:120],)).fetchone()
+        if r is None:
+            return {}
+        d = self._unpack_cyber_asset(r)
+        d["meaningful_change_detected"] = changed
+        return d
+
+    @staticmethod
+    def _unpack_cyber_asset(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["services"] = json.loads(d.pop("services_json") or "[]")
+        d["software_versions"] = json.loads(d.pop("software_versions_json") or "{}")
+        d["vulnerabilities"] = json.loads(d.pop("vulnerabilities_json") or "[]")
+        d["remediation_history"] = json.loads(d.pop("remediation_history_json") or "[]")
+        d["metadata"] = json.loads(d.pop("metadata_json") or "{}")
+        return d
+
+    def list_cyber_assets(self, *, scope_id: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM cyber_attack_surface_assets"
+        params: list[Any] = []
+        if scope_id:
+            sql += " WHERE scope_id = ?"
+            params.append(scope_id)
+        sql += " ORDER BY last_observed_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._unpack_cyber_asset(r) for r in rows]
+
+    def upsert_cyber_finding(self, item: dict[str, Any]) -> dict[str, Any]:
+        fid = str(item.get("id") or f"cfind-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO cyber_vulnerability_findings (
+                    id, vuln_identifier, category, epistemic_status, lifecycle_state,
+                    affected_asset, affected_software, severity, confidence, priority_score,
+                    exposure, exploitability_info, business_impact, existing_mitigations_json,
+                    evidence_json, prerequisites, recommended_correction, remediation_status,
+                    retest_result_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    vuln_identifier = excluded.vuln_identifier,
+                    category = excluded.category,
+                    epistemic_status = excluded.epistemic_status,
+                    lifecycle_state = excluded.lifecycle_state,
+                    affected_asset = excluded.affected_asset,
+                    affected_software = excluded.affected_software,
+                    severity = excluded.severity,
+                    confidence = excluded.confidence,
+                    priority_score = excluded.priority_score,
+                    exposure = excluded.exposure,
+                    exploitability_info = excluded.exploitability_info,
+                    business_impact = excluded.business_impact,
+                    existing_mitigations_json = excluded.existing_mitigations_json,
+                    evidence_json = excluded.evidence_json,
+                    prerequisites = excluded.prerequisites,
+                    recommended_correction = excluded.recommended_correction,
+                    remediation_status = excluded.remediation_status,
+                    retest_result_json = excluded.retest_result_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    fid[:80],
+                    str(item.get("vuln_identifier") or "")[:80],
+                    str(item.get("category") or "security_misconfiguration")[:80],
+                    str(item.get("epistemic_status") or "potential_vulnerability")[:64],
+                    str(item.get("lifecycle_state") or "Discovered")[:40],
+                    str(item.get("affected_asset") or "")[:240],
+                    str(item.get("affected_software") or "")[:160],
+                    str(item.get("severity") or "medium").lower()[:24],
+                    float(item.get("confidence", 0.7)),
+                    float(item.get("priority_score", 50.0)),
+                    str(item.get("exposure") or "local_only")[:64],
+                    str(item.get("exploitability_info") or "")[:500],
+                    str(item.get("business_impact") or "")[:500],
+                    _dump(item.get("existing_mitigations") or []),
+                    _dump(item.get("evidence") or {}),
+                    str(item.get("prerequisites") or "")[:400],
+                    str(item.get("recommended_correction") or "")[:1200],
+                    str(item.get("remediation_status") or "pending")[:48],
+                    _dump(item.get("retest_result") or {}),
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_vulnerability_findings WHERE id = ?", (fid[:80],)).fetchone()
+        return self._unpack_cyber_finding(r) if r else {}
+
+    @staticmethod
+    def _unpack_cyber_finding(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["existing_mitigations"] = json.loads(d.pop("existing_mitigations_json") or "[]")
+        d["evidence"] = json.loads(d.pop("evidence_json") or "{}")
+        d["retest_result"] = json.loads(d.pop("retest_result_json") or "{}")
+        return d
+
+    def get_cyber_finding(self, finding_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM cyber_vulnerability_findings WHERE id = ?", (finding_id,)).fetchone()
+        return self._unpack_cyber_finding(r) if r else None
+
+    def list_cyber_findings(self, *, lifecycle_state: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM cyber_vulnerability_findings"
+        params: list[Any] = []
+        if lifecycle_state:
+            sql += " WHERE lifecycle_state = ?"
+            params.append(lifecycle_state)
+        sql += " ORDER BY priority_score DESC, updated_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._unpack_cyber_finding(r) for r in rows]
+
+    def upsert_cyber_research_dossier(self, item: dict[str, Any]) -> dict[str, Any]:
+        did = str(item.get("id") or f"cdos-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO cyber_research_dossiers (
+                    id, identifier, title, cvss_score, cwe_id,
+                    dossier_json, sources_json, confidence, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    identifier = excluded.identifier,
+                    title = excluded.title,
+                    cvss_score = excluded.cvss_score,
+                    cwe_id = excluded.cwe_id,
+                    dossier_json = excluded.dossier_json,
+                    sources_json = excluded.sources_json,
+                    confidence = excluded.confidence,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    did[:80],
+                    str(item.get("identifier") or did)[:80],
+                    str(item.get("title") or "")[:240],
+                    float(item["cvss_score"]) if item.get("cvss_score") is not None else None,
+                    str(item.get("cwe_id") or "")[:40],
+                    _dump(item.get("dossier") or {}),
+                    _dump(item.get("sources") or []),
+                    float(item.get("confidence", 0.85)),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_research_dossiers WHERE id = ?", (did[:80],)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["dossier"] = json.loads(d.pop("dossier_json") or "{}")
+        d["sources"] = json.loads(d.pop("sources_json") or "[]")
+        return d
+
+    def list_cyber_research_dossiers(self, *, query: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM cyber_research_dossiers"
+        params: list[Any] = []
+        if query:
+            q = f"%{query.strip().lower()}%"
+            sql += " WHERE LOWER(identifier) LIKE ? OR LOWER(title) LIKE ? OR LOWER(cwe_id) LIKE ?"
+            params.extend([q, q, q])
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 300)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["dossier"] = json.loads(d.pop("dossier_json") or "{}")
+            d["sources"] = json.loads(d.pop("sources_json") or "[]")
+            out.append(d)
+        return out
+
+    def upsert_cyber_incident_case(self, item: dict[str, Any]) -> dict[str, Any]:
+        cid = str(item.get("id") or f"cir-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO cyber_incident_cases (
+                    id, title, severity, status, confirmed_evidence_json,
+                    suspected_activity_json, timeline_json, checklist_json,
+                    preserved_artifacts_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    severity = excluded.severity,
+                    status = excluded.status,
+                    confirmed_evidence_json = excluded.confirmed_evidence_json,
+                    suspected_activity_json = excluded.suspected_activity_json,
+                    timeline_json = excluded.timeline_json,
+                    checklist_json = excluded.checklist_json,
+                    preserved_artifacts_json = excluded.preserved_artifacts_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    cid[:80],
+                    str(item.get("title") or cid)[:200],
+                    str(item.get("severity") or "medium")[:24],
+                    str(item.get("status") or "open")[:32],
+                    _dump(item.get("confirmed_evidence") or []),
+                    _dump(item.get("suspected_activity") or []),
+                    _dump(item.get("timeline") or []),
+                    _dump(item.get("checklist") or {}),
+                    _dump(item.get("preserved_artifacts") or []),
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_incident_cases WHERE id = ?", (cid[:80],)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["confirmed_evidence"] = json.loads(d.pop("confirmed_evidence_json") or "[]")
+        d["suspected_activity"] = json.loads(d.pop("suspected_activity_json") or "[]")
+        d["timeline"] = json.loads(d.pop("timeline_json") or "[]")
+        d["checklist"] = json.loads(d.pop("checklist_json") or "{}")
+        d["preserved_artifacts"] = json.loads(d.pop("preserved_artifacts_json") or "[]")
+        return d
+
+    def upsert_cyber_generated_tool(self, item: dict[str, Any]) -> dict[str, Any]:
+        tid = str(item.get("tool_id") or f"ctool-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO cyber_generated_tools (
+                    tool_id, name, category, purpose, version, status,
+                    script_path, test_result_json, permissions_json, rollback_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tool_id) DO UPDATE SET
+                    name = excluded.name,
+                    category = excluded.category,
+                    purpose = excluded.purpose,
+                    version = excluded.version,
+                    status = excluded.status,
+                    script_path = excluded.script_path,
+                    test_result_json = excluded.test_result_json,
+                    permissions_json = excluded.permissions_json,
+                    rollback_json = excluded.rollback_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    tid[:80],
+                    str(item.get("name") or tid)[:120],
+                    str(item.get("category") or "defensive_utility")[:80],
+                    str(item.get("purpose") or "")[:500],
+                    max(1, int(item.get("version") or 1)),
+                    str(item.get("status") or "validated")[:40],
+                    str(item.get("script_path") or "")[:400],
+                    _dump(item.get("test_result") or {}),
+                    _dump(item.get("permissions") or {}),
+                    _dump(item.get("rollback") or {}),
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_generated_tools WHERE tool_id = ?", (tid[:80],)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["test_result"] = json.loads(d.pop("test_result_json") or "{}")
+        d["permissions"] = json.loads(d.pop("permissions_json") or "{}")
+        d["rollback"] = json.loads(d.pop("rollback_json") or "{}")
+        return d
+
+    def get_cyber_generated_tool(self, tool_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM cyber_generated_tools WHERE tool_id = ?", (tool_id,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["test_result"] = json.loads(d.pop("test_result_json") or "{}")
+        d["permissions"] = json.loads(d.pop("permissions_json") or "{}")
+        d["rollback"] = json.loads(d.pop("rollback_json") or "{}")
+        return d
+
+    def list_cyber_generated_tools(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM cyber_generated_tools ORDER BY updated_at DESC").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["test_result"] = json.loads(d.pop("test_result_json") or "{}")
+            d["permissions"] = json.loads(d.pop("permissions_json") or "{}")
+            d["rollback"] = json.loads(d.pop("rollback_json") or "{}")
+            out.append(d)
+        return out
+
+    def upsert_cyber_recurring_assessment(self, item: dict[str, Any]) -> dict[str, Any]:
+        rid = str(item.get("id") or f"crecur-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO cyber_recurring_assessments (
+                    id, name, workflow_kind, scope_id, target, interval_minutes,
+                    rate_limit_rpm, credentials_valid, status, pause_reason,
+                    run_count, last_report_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    workflow_kind = excluded.workflow_kind,
+                    scope_id = excluded.scope_id,
+                    target = excluded.target,
+                    interval_minutes = excluded.interval_minutes,
+                    rate_limit_rpm = excluded.rate_limit_rpm,
+                    credentials_valid = excluded.credentials_valid,
+                    status = excluded.status,
+                    pause_reason = excluded.pause_reason,
+                    run_count = excluded.run_count,
+                    last_report_json = excluded.last_report_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    rid[:80],
+                    str(item.get("name") or rid)[:160],
+                    str(item.get("workflow_kind") or "version_and_config_audit")[:80],
+                    str(item.get("scope_id") or "")[:80],
+                    str(item.get("target") or "")[:240],
+                    max(1, int(item.get("interval_minutes") or 60)),
+                    max(1, int(item.get("rate_limit_rpm") or 30)),
+                    1 if item.get("credentials_valid", True) else 0,
+                    str(item.get("status") or "active")[:40],
+                    str(item.get("pause_reason") or "")[:300],
+                    max(0, int(item.get("run_count") or 0)),
+                    _dump(item.get("last_report") or {}),
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_recurring_assessments WHERE id = ?", (rid[:80],)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["credentials_valid"] = bool(d["credentials_valid"])
+        d["last_report"] = json.loads(d.pop("last_report_json") or "{}")
+        return d
+
+    def get_cyber_recurring_assessment(self, job_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM cyber_recurring_assessments WHERE id = ?", (job_id,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["credentials_valid"] = bool(d["credentials_valid"])
+        d["last_report"] = json.loads(d.pop("last_report_json") or "{}")
+        return d
+
+    def list_cyber_recurring_assessments(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM cyber_recurring_assessments ORDER BY updated_at DESC").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["credentials_valid"] = bool(d["credentials_valid"])
+            d["last_report"] = json.loads(d.pop("last_report_json") or "{}")
+            out.append(d)
+        return out
+
 
 

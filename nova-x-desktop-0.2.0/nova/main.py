@@ -696,6 +696,55 @@ def _kali_intel_health(app_state: Any) -> dict[str, Any]:
     return base
 
 
+def _cyber_division_health(app_state: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "sections": "201-220",
+        "unified_single_architecture": True,
+        "active_scopes": 0,
+        "tracked_findings": 0,
+        "degraded": True,
+        "detail": "/api/cyber/status",
+    }
+    try:
+        platform_svc = getattr(app_state, "platform", None) or getattr(getattr(app_state, "engine", None), "platform", None)
+        cy = getattr(platform_svc, "cyber_division", None) if platform_svc is not None else None
+        if cy is None:
+            return base
+        s = cy.status_summary()
+        base["active_scopes"] = int(s["active_scopes"])
+        base["tracked_findings"] = int(s["tracked_findings"])
+        base["degraded"] = False
+    except Exception:
+        base["degraded"] = True
+    return base
+
+
+class CyberScopeCreateApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=2, max_length=160)
+    category: str = Field(default="development_environment", max_length=80)
+    targets: list[str] = Field(min_length=1, max_length=50)
+    authorization_evidence: str = Field(min_length=3, max_length=500)
+    excluded_targets: list[str] | None = None
+    standing_authorization: bool = True
+    rate_limit_rpm: int = Field(default=60, ge=1, le=600)
+    expires_at: str = ""
+
+
+class CyberEngagementApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    objective: str = Field(min_length=3, max_length=500)
+    target: str = Field(min_length=1, max_length=400)
+    remediate_if_source_file: str = Field(default="", max_length=400)
+
+
+class CyberFactoryBuildApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=2, max_length=120)
+    category: str = Field(default="file_integrity_monitor", max_length=80)
+    purpose: str = Field(min_length=4, max_length=400)
+
+
 class KaliExecuteApiRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     objective: str = Field(min_length=2, max_length=500)
@@ -1065,6 +1114,7 @@ def create_app(
             "privacy_intel": _privacy_intel_health(app.state),
             "hybrid_cloud": _hybrid_cloud_health(app.state),
             "kali_intel": _kali_intel_health(app.state),
+            "cyber_division": _cyber_division_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -2660,6 +2710,86 @@ def create_app(
                 baseline_argv=payload.baseline_argv,
                 improved_argv=payload.improved_argv,
                 hypothesis=payload.hypothesis,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # --- Autonomous Cybersecurity, Vulnerability Research & Security Engineering (§201–§220) ---
+    @app.get("/api/cyber/status")
+    async def cyber_status() -> dict[str, Any]:
+        return engine.platform.cyber_division.status_summary()
+
+    @app.get("/api/cyber/capabilities")
+    async def cyber_capabilities() -> dict[str, Any]:
+        return await asyncio.to_thread(engine.platform.cyber_division.honest_capability_statement)
+
+    @app.get("/api/cyber/scopes")
+    async def cyber_list_scopes(active_only: bool = False) -> dict[str, Any]:
+        return {"scopes": engine.platform.cyber_division.db.list_cyber_scopes(active_only=active_only)}
+
+    @app.post("/api/cyber/scopes")
+    async def cyber_create_scope(payload: CyberScopeCreateApiRequest) -> dict[str, Any]:
+        try:
+            scope = await asyncio.to_thread(
+                engine.platform.cyber_division.scope_registry.register_scope,
+                name=payload.name,
+                category=payload.category,
+                targets=payload.targets,
+                authorization_evidence=payload.authorization_evidence,
+                excluded_targets=payload.excluded_targets,
+                standing_authorization=payload.standing_authorization,
+                rate_limit_rpm=payload.rate_limit_rpm,
+                expires_at=payload.expires_at,
+            )
+            return {"ok": True, "scope": scope}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/cyber/findings")
+    async def cyber_list_findings(lifecycle_state: str = "") -> dict[str, Any]:
+        return {"findings": engine.platform.cyber_division.db.list_cyber_findings(lifecycle_state=lifecycle_state)}
+
+    @app.post("/api/cyber/engagement")
+    async def cyber_run_engagement(payload: CyberEngagementApiRequest) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.cyber_division.execute_14_step_security_engagement,
+            objective=payload.objective,
+            target=payload.target,
+            remediate_if_source_file=payload.remediate_if_source_file,
+        )
+
+    @app.get("/api/cyber/research")
+    async def cyber_research(q: str) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.cyber_division.research_workbench.research_vulnerability,
+            q,
+        )
+
+    @app.get("/api/cyber/wireless")
+    async def cyber_wireless() -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.cyber_division.wireless_hw_lab.assess_wireless_and_hardware_capabilities,
+        )
+
+    @app.post("/api/cyber/factory/build")
+    async def cyber_factory_build(payload: CyberFactoryBuildApiRequest) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                engine.platform.cyber_division.tool_factory.build_and_register_defensive_tool,
+                name=payload.name,
+                category=payload.category,
+                purpose=payload.purpose,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/cyber/tutor")
+    async def cyber_tutor(discipline: str = "linux_security", score: float | None = None) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                engine.platform.cyber_division.expert_tutor.generate_adaptive_module,
+                discipline,
+                demonstrated_scores=[score] if score is not None else None,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
