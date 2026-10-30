@@ -2023,6 +2023,7 @@ class NovaWindow(QMainWindow):
             f"Registered SSH Servers ({len(srvs)}): " + (", ".join(f"{s['alias']} ({s['hostname']}:{s['port']} · {s['connection_health']})" for s in srvs) or "none configured"),
             f"Screen Studio Recordings: {len(snap['recordings'])} saved session(s) · session_type={snap['recording_session']['session_type']}",
             f"Kali Intelligence (§181–§200): profiles={self.runtime.kali_intel.status_summary()['indexed_tool_and_app_profiles']} · docs={self.runtime.kali_intel.status_summary()['indexed_knowledge_documents']} · labs={self.runtime.kali_intel.status_summary()['managed_cyber_labs']}",
+            f"Cybersecurity Division (§201–§220): scopes={self.runtime.cyber_division.status_summary()['active_scopes']} · findings={self.runtime.cyber_division.status_summary()['tracked_findings']} · factory_tools={self.runtime.cyber_division.status_summary()['generated_defensive_tools']}",
         ]
         self.infra_ops_box.setPlainText("\n".join(ops_lines))
 

@@ -106,6 +106,9 @@ jobs:
       - name: Final Kali Expertise Acceptance (§200)
         run: python -m nova.kali_intel.acceptance
 
+      - name: Final Security Engineering Acceptance (§220)
+        run: python -m nova.cyber_division.acceptance
+
       - name: Pytest (full suite)
         run: python -m pytest -q
 

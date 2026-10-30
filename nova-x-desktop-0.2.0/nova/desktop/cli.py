@@ -45,6 +45,13 @@ def _parser() -> argparse.ArgumentParser:
     kali_cmd.add_argument("--troubleshoot", default="", help="Run 13-step Kali host diagnostic playbook")
     kali_cmd.add_argument("--lesson", default="", help="Generate Kali Training lesson for a track (e.g. kali_fundamentals)")
     kali_cmd.add_argument("--capability", default="", help="Query Capability Registry in natural language")
+    cyber_cmd = subparsers.add_parser("cyber", help="Autonomous Cybersecurity, Vulnerability Research & Security Engineering Division (§201–§220)")
+    cyber_cmd.add_argument("--capabilities", action="store_true", help="Print honest empirically tested vs optional security capabilities")
+    cyber_cmd.add_argument("--register-scope", default="", help="Register a local development/testing directory or host target in scope")
+    cyber_cmd.add_argument("--analyze-source", default="", help="Run SAST/SCA/Dockerfile security audit on an in-scope directory")
+    cyber_cmd.add_argument("--inspect-sample", default="", help="Run static non-executing binary/artifact inspection on a file")
+    cyber_cmd.add_argument("--research", default="", help="Research a CVE, CWE, or security advisory across 8 epistemic fields")
+    cyber_cmd.add_argument("--tutor", default="", help="Generate an adaptive cybersecurity training module (17 disciplines)")
     worker = subparsers.add_parser("worker", help="Run optional user-level background goal/task worker")
     worker.add_argument("--once", action="store_true", help="Run one scheduled-goal check tick and exit")
     worker.add_argument("--poll-seconds", type=int, default=15, help="Polling interval in seconds (5–300)")
@@ -282,6 +289,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(ki.app_registry.query_capabilities(args.capability), indent=2, default=str))
                 return 0
             print(json.dumps(ki.status_summary(), indent=2, default=str))
+            return 0
+        finally:
+            runtime.close()
+    if args.action == "cyber":
+        runtime = DesktopRuntime()
+        try:
+            cy = runtime.cyber_division
+            if args.capabilities:
+                print(json.dumps(cy.honest_capability_statement(), indent=2, default=str))
+                return 0
+            if args.register_scope:
+                sc = cy.scope_registry.register_scope(
+                    name=f"CLI Scope: {args.register_scope}",
+                    category="development_environment",
+                    targets=[args.register_scope],
+                    authorization_evidence="Explicit local operator CLI scope registration",
+                )
+                print(json.dumps({"scope": sc}, indent=2, default=str))
+                return 0
+            if args.analyze_source:
+                print(json.dumps(cy.code_security.analyze_project(args.analyze_source), indent=2, default=str))
+                return 0
+            if args.inspect_sample:
+                print(json.dumps(cy.re_forensics.inspect_sample_statically(args.inspect_sample), indent=2, default=str))
+                return 0
+            if args.research:
+                print(json.dumps(cy.research_workbench.research_vulnerability(args.research), indent=2, default=str))
+                return 0
+            if args.tutor:
+                print(json.dumps(cy.expert_tutor.generate_adaptive_module(args.tutor), indent=2, default=str))
+                return 0
+            print(json.dumps(cy.status_summary(), indent=2, default=str))
             return 0
         finally:
             runtime.close()

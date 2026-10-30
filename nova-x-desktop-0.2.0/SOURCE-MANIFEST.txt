@@ -10,6 +10,7 @@ Contents:
   docs/COGNITION.md
   docs/CORRECTED_MASTER_ARCHITECTURE.md
   docs/CREATION_ENGINE.md
+  docs/CYBERSECURITY_DIVISION.md
   docs/EXTENSION_SDK.md
   docs/FEATURE_MATRIX.md
   docs/INTEGRATIONS.md
@@ -49,6 +50,13 @@ Contents:
   nova/creation/registry.py
   nova/creation/team.py
   nova/creation/workspace.py
+  nova/cyber_division/__init__.py
+  nova/cyber_division/acceptance.py
+  nova/cyber_division/assessment_and_code_sec.py
+  nova/cyber_division/factory_purple_automation.py
+  nova/cyber_division/research_forensics_wireless.py
+  nova/cyber_division/scope_and_surface.py
+  nova/cyber_division/service.py
   nova/data_workspace.py
   nova/db.py
   nova/desktop/__init__.py
@@ -114,6 +122,7 @@ Contents:
   nova/tools/__init__.py
   nova/tools/calculator.py
   nova/tools/creation.py
+  nova/tools/cyber_division.py
   nova/tools/kali_intel.py
   nova/tools/privacy_intel.py
   nova/tools/registry.py
@@ -149,6 +158,7 @@ Contents:
   tests/test_controls.py
   tests/test_corrected_master_architecture.py
   tests/test_creation_engine.py
+  tests/test_cyber_division.py
   tests/test_desktop.py
   tests/test_desktop_ui.py
   tests/test_engine.py
@@ -210,6 +220,11 @@ Notes:
     nova/tools/kali_intel.py, documented in docs/KALI_INTELLIGENCE_LAYER.md and
     verified by `python -m nova.kali_intel.acceptance` (18 acceptance checks)
     and tests/test_kali_intelligence.py.
+  * The §201–§220 Autonomous Cybersecurity, Vulnerability Research, and Security
+    Engineering Division lives in nova/cyber_division/ and
+    nova/tools/cyber_division.py, documented in docs/CYBERSECURITY_DIVISION.md and
+    verified by `python -m nova.cyber_division.acceptance` (18 acceptance checks)
+    and tests/test_cyber_division.py.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).
