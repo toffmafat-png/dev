@@ -621,7 +621,26 @@ class NovaWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-        layout.addWidget(_page_header("Permissions", "Autonomy never expands the registered tool boundary. High-impact, admin, network, and security-sensitive commands always need fresh review."))
+        layout.addWidget(_page_header("Permissions", "Single-user Kali Linux autonomy & persistent permissions. Routine authorized scopes run without repeated approval dialogs while material safeguards stay active."))
+        _, personal_layout = _card(layout)
+        personal_layout.addWidget(_label("Personal-Use Security & Autonomy Policy (Sections 1–7)", "sectionTitle"))
+        personal_row = QHBoxLayout()
+        self.personal_mode_combo = QComboBox()
+        for mode_id, mode_desc in (
+            ("balanced", "Balanced — Scoped routine automation + explicit persistent grants"),
+            ("personal_power_user", "Personal Power User — Automatic dev/CLI/test/git/build in owned workspaces"),
+            ("cyber_lab_research", "Cyber Lab Research — Power-user + persistent authorized lab security testing"),
+            ("strict_review", "Strict Review — Fresh approval for non-trivial mutations"),
+        ):
+            self.personal_mode_combo.addItem(mode_desc, mode_id)
+        personal_row.addWidget(self.personal_mode_combo, 1)
+        save_personal = QPushButton("Save personal mode")
+        save_personal.setProperty("primary", True)
+        save_personal.clicked.connect(self._save_personal_policy_mode)
+        personal_row.addWidget(save_personal)
+        personal_layout.addLayout(personal_row)
+        self.personal_policy_summary = _label("Loading single-user personal policy…", "muted", word_wrap=True)
+        personal_layout.addWidget(self.personal_policy_summary)
         _, level_layout = _card(layout)
         level_layout.addWidget(_label("Autonomy level", "sectionTitle"))
         level_row = QHBoxLayout()
@@ -1435,11 +1454,32 @@ class NovaWindow(QMainWindow):
             self.autonomy_combo.setCurrentIndex(index)
         prefixes = policy.get("trusted_command_prefixes", DEFAULT_TRUSTED_PREFIXES)
         self.prefixes_editor.setPlainText("\n".join(shlex.join(item) for item in prefixes))
+        if hasattr(self, "personal_mode_combo") and hasattr(self.runtime, "personal_policy"):
+            pp_stat = self.runtime.personal_policy.status_summary()
+            p_idx = self.personal_mode_combo.findData(pp_stat.get("profile_mode", "balanced"))
+            if p_idx >= 0:
+                self.personal_mode_combo.setCurrentIndex(p_idx)
+            self.personal_policy_summary.setText(
+                f"Deployment: {pp_stat['deployment_model']} · Active persistent grants: {pp_stat['active_persistent_grants_count']} "
+                f"(cyber labs: {pp_stat['cyber_lab_grants_count']}) · External transfers logged: {pp_stat['external_transfers_logged_count']} "
+                f"· Strict OWASP mandatory: {pp_stat['strict_owasp_checklist_mandatory']}"
+            )
         tools = self.runtime.registry.all_tools()
         rows = []
         for item in tools:
             rows.append(f"{item['name']} · {item['category']} · autonomy_class={item['autonomy_class']}\n  {item['permission']}")
         self.tool_classification.setPlainText("\n\n".join(rows))
+
+    def _save_personal_policy_mode(self) -> None:
+        if not hasattr(self.runtime, "personal_policy"):
+            return
+        mode = str(self.personal_mode_combo.currentData() or "balanced")
+        try:
+            self.runtime.personal_policy.autonomy.configure_policy(profile_mode=mode)
+            self._refresh_permissions()
+            self._show_info(f"Personal-use security & autonomy mode updated to '{mode}'.")
+        except Exception as exc:
+            self._show_error(f"Could not save personal policy mode ({type(exc).__name__}: {exc}).")
 
     def _save_autonomy(self) -> None:
         level = str(self.autonomy_combo.currentData() or "routine")

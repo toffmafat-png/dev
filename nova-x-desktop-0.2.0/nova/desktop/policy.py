@@ -249,6 +249,102 @@ class CommandPolicy:
             return all(token in {"table", "main", "default", "--details", "-details"} for token in argv[len(prefix):])
         return True
 
+    @staticmethod
+    def _is_catastrophic_command(argv: list[str]) -> str | None:
+        if not argv:
+            return None
+        joined = " ".join(argv).strip()
+        exe = Path(argv[0]).name.lower()
+        if exe in {"mkfs", "wipefs", "fdisk", "parted", "sfdisk"} or exe.startswith("mkfs."):
+            return f"Catastrophic disk/filesystem formatter '{exe}' is blocked from automatic execution."
+        if exe == "dd" and any(tok.startswith("of=/dev/") for tok in argv[1:]):
+            return "Raw block-device write via 'dd of=/dev/...' is blocked to prevent unrecoverable disk loss."
+        if exe in {"rm", "shred"}:
+            flags = {tok for tok in argv[1:] if tok.startswith("-")}
+            targets = [tok.rstrip("/") or "/" for tok in argv[1:] if not tok.startswith("-")]
+            recursive = any("r" in f.lower() for f in flags) or "--no-preserve-root" in flags
+            critical = {"/", "/boot", "/etc", "/usr", "/var", "/home", "/root", "~", "*"}
+            if "--no-preserve-root" in flags or (recursive and any(t in critical for t in targets)):
+                return "Catastrophic recursive deletion targeting a root or critical system tree is blocked."
+        if ":(){ :|:& };:" in joined:
+            return "Fork bomb pattern is blocked."
+        return None
+
+    def check_personal_grant(self, argv: list[str], cwd: str, *, privileged: bool = False) -> dict[str, Any] | None:
+        """Evaluate user-configured single-user personal persistent grants & power-user mode."""
+        if privileged or not argv:
+            return None
+        if self._is_catastrophic_command(argv) is not None:
+            return None
+        if self._has_sensitive_path_or_flag(argv):
+            return None
+        executable = Path(argv[0]).name.lower()
+        if executable in _PRIVILEGE_WRAPPERS:
+            return None
+        if executable in _SHELLS and any(item in {"-c", "--command"} for item in argv[1:]):
+            return None
+        executable_path = shutil.which(argv[0])
+        if not executable_path:
+            return None
+        try:
+            working_dir = Path(cwd).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+        if not working_dir.is_dir():
+            return None
+
+        # 1. Explicit persistent grants stored in SQLite by the user
+        grants = self.database.list_personal_persistent_grants(active_only=True)
+        for grant in grants:
+            programs = [str(p).lower() for p in (grant.get("allowed_programs") or [])]
+            if programs and "*" not in programs and executable not in programs:
+                continue
+            scope_target = str(grant.get("scope_target") or "").strip()
+            scope_matched = False
+            if scope_target == "*":
+                scope_matched = True
+            elif grant.get("domain") == "software_and_security_research":
+                # Cyber lab target scope (e.g. 127.0.0.1, localhost, .lab.internal, or lab directory)
+                if any(scope_target in tok for tok in argv[1:]):
+                    scope_matched = True
+                else:
+                    try:
+                        sp = Path(scope_target).expanduser().resolve(strict=False)
+                        scope_matched = working_dir == sp or sp in working_dir.parents
+                    except OSError:
+                        scope_matched = False
+            else:
+                try:
+                    sp = Path(scope_target).expanduser().resolve(strict=False)
+                    scope_matched = working_dir == sp or sp in working_dir.parents
+                except OSError:
+                    scope_matched = False
+            if scope_matched:
+                return {
+                    "action": "allow",
+                    "rule": "personal_persistent_grant",
+                    "grant_id": grant["grant_id"],
+                    "reason": f"Authorized by persistent personal permission grant '{grant['grant_id']}' without repeated prompt.",
+                    "executable": executable_path,
+                    "cwd": str(working_dir),
+                }
+
+        # 2. Configured personal_power_user / cyber_lab_research profile inside workspace roots
+        cfg = self.database.get_personal_policy_config()
+        if cfg and cfg.get("profile_mode") in {"personal_power_user", "cyber_lab_research"}:
+            from nova.personal_policy.engine import DEFAULT_POWER_USER_PROGRAMS
+
+            roots = self.roots()
+            if roots and is_within(working_dir, roots) and executable in DEFAULT_POWER_USER_PROGRAMS:
+                return {
+                    "action": "allow",
+                    "rule": "personal_power_user_profile",
+                    "reason": f"Authorized by '{cfg['profile_mode']}' personal policy inside owned workspace.",
+                    "executable": executable_path,
+                    "cwd": str(working_dir),
+                }
+        return None
+
     def evaluate(self, argv: list[str], cwd: str, *, privileged: bool = False) -> dict[str, Any]:
         if not argv or len(argv) > 128 or any(not isinstance(item, str) or "\x00" in item or len(item) > 8192 for item in argv):
             return {"action": "deny", "rule": "invalid_arguments", "reason": "Command arguments are invalid or exceed the bounded limit."}
@@ -257,9 +353,15 @@ class CommandPolicy:
             return {"action": "deny", "rule": "shell_command_string_blocked", "reason": "Model-supplied shell command strings are blocked; use structured program arguments or a reviewed script in an authorized workspace."}
         if executable in _PRIVILEGE_WRAPPERS:
             return {"action": "deny", "rule": "privilege_wrapper_blocked", "reason": "Do not invoke sudo, su, doas, or pkexec through process.execute. Use system.run_privileged for one reviewed action and the normal polkit agent."}
+        catastrophic_reason = self._is_catastrophic_command(argv)
+        if catastrophic_reason is not None:
+            return {"action": "deny", "rule": "catastrophic_system_modification_blocked", "reason": catastrophic_reason}
         executable_path = shutil.which(argv[0])
         if not executable_path:
             return {"action": "deny", "rule": "command_not_found", "reason": f"Command '{executable}' is not installed or not on PATH."}
+        personal_grant = self.check_personal_grant(argv, cwd, privileged=privileged)
+        if personal_grant is not None:
+            return personal_grant
         if executable == "git" and len(argv) > 1 and argv[1].lower() in {"push", "pull", "fetch", "clone", "reset", "clean", "checkout", "restore", "rebase", "commit", "cherry-pick", "revert", "merge", "config", "remote", "submodule", "am"}:
             return {"action": "approval_required", "rule": "git_mutation_or_network", "reason": f"Git '{argv[1]}' can modify repository state or contact a remote and always needs fresh approval."}
         if executable == "ip" and (len(argv) < 3 or argv[1:3] not in (["addr", "show"], ["route", "show"], ["link", "show"], ["neigh", "show"])):

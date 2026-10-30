@@ -18,6 +18,7 @@ Contents:
   docs/INTEGRATIONS.md
   docs/KALI_INTELLIGENCE_LAYER.md
   docs/NATIVE_DESKTOP.md
+  docs/PERSONAL_USE_SECURITY_POLICY.md
   docs/PLATFORM_ARCHITECTURE.md
   docs/PRIVACY_INTEL.md
   docs/RELEASE_CHECKLIST.md
@@ -112,6 +113,10 @@ Contents:
   nova/modalities.py
   nova/model_providers.py
   nova/observability.py
+  nova/personal_policy/__init__.py
+  nova/personal_policy/acceptance.py
+  nova/personal_policy/engine.py
+  nova/personal_policy/service.py
   nova/platform_service.py
   nova/plugins.py
   nova/privacy_intel/__init__.py
@@ -143,6 +148,7 @@ Contents:
   nova/tools/cyber_division.py
   nova/tools/general_intelligence.py
   nova/tools/kali_intel.py
+  nova/tools/personal_policy.py
   nova/tools/privacy_intel.py
   nova/tools/registry.py
   nova/tools/research.py
@@ -188,6 +194,7 @@ Contents:
   tests/test_intelligence.py
   tests/test_kali_intelligence.py
   tests/test_model_providers.py
+  tests/test_personal_use_policy.py
   tests/test_platform_stack.py
   tests/test_privacy_intel_module.py
   tests/test_provider.py
@@ -258,6 +265,11 @@ Notes:
     docs/GENERAL_INTELLIGENCE_ARCHITECTURE.md and verified by
     `python -m nova.general_intelligence.acceptance` (20 unseen acceptance tasks)
     and tests/test_general_intelligence_expansion.py.
+  * The Single-User Personal Security & Autonomy Policy (Sections 1–7) lives in
+    nova/personal_policy/ and nova/tools/personal_policy.py, documented in
+    docs/PERSONAL_USE_SECURITY_POLICY.md and verified by
+    `python -m nova.personal_policy.acceptance` (16 acceptance checks) and
+    tests/test_personal_use_policy.py.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).

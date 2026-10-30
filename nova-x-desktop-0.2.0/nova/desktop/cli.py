@@ -68,6 +68,14 @@ def _parser() -> argparse.ArgumentParser:
     gi_cmd.add_argument("--reliability", action="store_true", help="Run 15-point reliability & failure-domain audit (§252)")
     gi_cmd.add_argument("--security-audit", action="store_true", help="Run OWASP GenAI & NIST AI RMF adversarial security suite (§253)")
     gi_cmd.add_argument("--cycle", default="", help="Run a coordinated 11-subsystem cognitive cycle for an objective (§236)")
+    pp_cmd = subparsers.add_parser("personal-policy", help="Single-User Personal Security, Persistent Permissions & Autonomy Policy (Sections 1–7)")
+    pp_cmd.add_argument("--manifest", action="store_true", help="Print full single-user personal security & autonomy policy manifest")
+    pp_cmd.add_argument("--set-mode", default="", help="Configure profile mode (balanced, personal_power_user, cyber_lab_research, strict_review)")
+    pp_cmd.add_argument("--grant-scope", default="", help="Create a persistent permission grant for an owned workspace/scope path")
+    pp_cmd.add_argument("--grant-domain", default="development_tools", help="Domain for --grant-scope (default: development_tools)")
+    pp_cmd.add_argument("--grant-programs", default="*", help="Comma-separated allowed programs for --grant-scope (default: *)")
+    pp_cmd.add_argument("--register-lab", default="", help="Register an owned/authorized personal cyber lab target with persistent authorization")
+    pp_cmd.add_argument("--transfers", action="store_true", help="Inspect visible external frontier AI provider data transfers")
     worker = subparsers.add_parser("worker", help="Run optional user-level background goal/task worker")
     worker.add_argument("--once", action="store_true", help="Run one scheduled-goal check tick and exit")
     worker.add_argument("--poll-seconds", type=int, default=15, help="Polling interval in seconds (5–300)")
@@ -400,6 +408,50 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(gi.cognitive_arch.run_coordinated_cycle(objective=args.cycle), indent=2, default=str))
                 return 0
             print(json.dumps(gi.status_summary(), indent=2, default=str))
+            return 0
+        finally:
+            runtime.close()
+    if args.action == "personal-policy":
+        runtime = DesktopRuntime()
+        try:
+            pp = runtime.personal_policy
+            if args.manifest:
+                print(json.dumps(pp.policy_manifest(), indent=2, default=str))
+                return 0
+            if args.set_mode:
+                print(json.dumps(pp.autonomy.configure_policy(profile_mode=args.set_mode), indent=2, default=str))
+                return 0
+            if args.grant_scope:
+                progs = [p.strip() for p in str(args.grant_programs).split(",") if p.strip()]
+                print(
+                    json.dumps(
+                        pp.autonomy.grant_persistent_permission(
+                            domain=args.grant_domain,
+                            scope_target=args.grant_scope,
+                            allowed_programs=progs,
+                        ),
+                        indent=2,
+                        default=str,
+                    )
+                )
+                return 0
+            if args.register_lab:
+                print(
+                    json.dumps(
+                        pp.cyber_research.register_persistent_lab_environment(
+                            name=f"CLI Lab {args.register_lab}",
+                            category="development_environment",
+                            targets=[args.register_lab],
+                        ),
+                        indent=2,
+                        default=str,
+                    )
+                )
+                return 0
+            if args.transfers:
+                print(json.dumps(pp.local_privacy.inspect_external_transfers(), indent=2, default=str))
+                return 0
+            print(json.dumps(pp.status_summary(), indent=2, default=str))
             return 0
         finally:
             runtime.close()

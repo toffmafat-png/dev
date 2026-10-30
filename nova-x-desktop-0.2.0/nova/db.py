@@ -1225,6 +1225,33 @@ class Database:
                     tasks_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS personal_policy_config (
+                    config_id TEXT PRIMARY KEY,
+                    profile_mode TEXT NOT NULL DEFAULT 'balanced_personal',
+                    settings_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS personal_persistent_grants (
+                    grant_id TEXT PRIMARY KEY,
+                    domain TEXT NOT NULL,
+                    scope_target TEXT NOT NULL DEFAULT '*',
+                    allowed_programs_json TEXT NOT NULL DEFAULT '[]',
+                    allowed_operations_json TEXT NOT NULL DEFAULT '[]',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS personal_transfer_visibility_log (
+                    transfer_id TEXT PRIMARY KEY,
+                    destination TEXT NOT NULL,
+                    purpose TEXT NOT NULL,
+                    project_id TEXT NOT NULL DEFAULT '',
+                    bytes_sent INTEGER NOT NULL DEFAULT 0,
+                    credentials_stripped INTEGER NOT NULL DEFAULT 1,
+                    allowed INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -6333,6 +6360,149 @@ class Database:
             d["tasks"] = json.loads(d.pop("tasks_json") or "[]")
             out.append(d)
         return out
+
+    # ------------------------------------------------------------------
+    # DEV Personal-Use Security & Autonomy Policy (Sections 1–7)
+    # ------------------------------------------------------------------
+
+    def get_personal_policy_config(self) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM personal_policy_config WHERE config_id = 'default'").fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["settings"] = json.loads(d.pop("settings_json") or "{}")
+        return d
+
+    def upsert_personal_policy_config(self, profile_mode: str, settings: dict[str, Any]) -> dict[str, Any]:
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO personal_policy_config (config_id, profile_mode, settings_json, updated_at)
+                VALUES ('default', ?, ?, ?)
+                ON CONFLICT(config_id) DO UPDATE SET
+                    profile_mode = excluded.profile_mode,
+                    settings_json = excluded.settings_json,
+                    updated_at = excluded.updated_at
+                """,
+                (str(profile_mode)[:60], _dump(settings or {}), now),
+            )
+            r = conn.execute("SELECT * FROM personal_policy_config WHERE config_id = 'default'").fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["settings"] = json.loads(d.pop("settings_json") or "{}")
+        return d
+
+    def upsert_personal_persistent_grant(self, item: dict[str, Any]) -> dict[str, Any]:
+        gid = str(item.get("grant_id") or f"pgrant-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO personal_persistent_grants (
+                    grant_id, domain, scope_target, allowed_programs_json,
+                    allowed_operations_json, active, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(grant_id) DO UPDATE SET
+                    domain = excluded.domain,
+                    scope_target = excluded.scope_target,
+                    allowed_programs_json = excluded.allowed_programs_json,
+                    allowed_operations_json = excluded.allowed_operations_json,
+                    active = excluded.active,
+                    notes = excluded.notes,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    gid,
+                    str(item.get("domain") or "development_tools")[:60],
+                    str(item.get("scope_target") or "*")[:400],
+                    _dump(item.get("allowed_programs") or []),
+                    _dump(item.get("allowed_operations") or []),
+                    1 if item.get("active", True) else 0,
+                    str(item.get("notes") or "")[:300],
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM personal_persistent_grants WHERE grant_id = ?", (gid,)).fetchone()
+        return self._decode_personal_grant(r)
+
+    @staticmethod
+    def _decode_personal_grant(r: sqlite3.Row | None) -> dict[str, Any]:
+        if r is None:
+            return {}
+        d = dict(r)
+        d["active"] = bool(d["active"])
+        d["allowed_programs"] = json.loads(d.pop("allowed_programs_json") or "[]")
+        d["allowed_operations"] = json.loads(d.pop("allowed_operations_json") or "[]")
+        return d
+
+    def list_personal_persistent_grants(self, *, active_only: bool = True, domain: str = "") -> list[dict[str, Any]]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if active_only:
+            clauses.append("active = 1")
+        if domain:
+            clauses.append("domain = ?")
+            params.append(domain)
+        sql = f"SELECT * FROM personal_persistent_grants WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._decode_personal_grant(r) for r in rows]
+
+    def revoke_personal_persistent_grant(self, grant_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE personal_persistent_grants SET active = 0, updated_at = ? WHERE grant_id = ?",
+                (utc_now(), grant_id[:80]),
+            )
+            return cur.rowcount > 0
+
+    def record_personal_external_transfer(self, item: dict[str, Any]) -> dict[str, Any]:
+        tid = str(item.get("transfer_id") or f"pxfer-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO personal_transfer_visibility_log (
+                    transfer_id, destination, purpose, project_id, bytes_sent, credentials_stripped, allowed, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tid,
+                    str(item.get("destination") or "frontier_ai_provider")[:160],
+                    str(item.get("purpose") or "task_context")[:160],
+                    str(item.get("project_id") or "")[:120],
+                    int(item.get("bytes_sent") or 0),
+                    1 if item.get("credentials_stripped", True) else 0,
+                    1 if item.get("allowed", True) else 0,
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM personal_transfer_visibility_log WHERE transfer_id = ?", (tid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["credentials_stripped"] = bool(d["credentials_stripped"])
+        d["allowed"] = bool(d["allowed"])
+        return d
+
+    def list_personal_external_transfers(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM personal_transfer_visibility_log ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["credentials_stripped"] = bool(d["credentials_stripped"])
+            d["allowed"] = bool(d["allowed"])
+            out.append(d)
+        return out
+
 
 
 
