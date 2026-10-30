@@ -658,6 +658,112 @@ class Database:
                     last_unclean_shutdown_reason TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS privacy_network_config (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    tor_enabled INTEGER NOT NULL DEFAULT 0,
+                    socks_host TEXT NOT NULL DEFAULT '127.0.0.1',
+                    socks_port INTEGER NOT NULL DEFAULT 9050,
+                    control_port INTEGER NOT NULL DEFAULT 9051,
+                    tor_browser_path TEXT NOT NULL DEFAULT '',
+                    onion_hosting_enabled INTEGER NOT NULL DEFAULT 0,
+                    component_routing_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS onion_bookmarks (
+                    id TEXT PRIMARY KEY,
+                    onion_address TEXT NOT NULL UNIQUE,
+                    title TEXT NOT NULL DEFAULT '',
+                    source_obtained_from TEXT NOT NULL DEFAULT '',
+                    official_reference_url TEXT NOT NULL DEFAULT '',
+                    trust_status TEXT NOT NULL DEFAULT 'unverified',
+                    reachability_status TEXT NOT NULL DEFAULT 'unchecked',
+                    last_http_status INTEGER,
+                    last_accessed_at TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_onion_bookmarks_updated ON onion_bookmarks(updated_at DESC);
+                CREATE TABLE IF NOT EXISTS internet_search_runs (
+                    id TEXT PRIMARY KEY,
+                    query TEXT NOT NULL,
+                    mode TEXT NOT NULL DEFAULT 'unified_search',
+                    sources_consulted_json TEXT NOT NULL DEFAULT '[]',
+                    sources_skipped_json TEXT NOT NULL DEFAULT '[]',
+                    query_limitations_json TEXT NOT NULL DEFAULT '[]',
+                    retrieval_errors_json TEXT NOT NULL DEFAULT '[]',
+                    result_count INTEGER NOT NULL DEFAULT 0,
+                    report_id TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_search_runs_created ON internet_search_runs(created_at DESC);
+                CREATE TABLE IF NOT EXISTS threat_intel_findings (
+                    id TEXT PRIMARY KEY,
+                    finding_kind TEXT NOT NULL,
+                    source_classification TEXT NOT NULL,
+                    confidence_tier TEXT NOT NULL DEFAULT 'claim',
+                    severity TEXT NOT NULL DEFAULT 'info',
+                    asset_scope TEXT NOT NULL DEFAULT '',
+                    indicators_json TEXT NOT NULL DEFAULT '{}',
+                    summary TEXT NOT NULL,
+                    remediation TEXT NOT NULL DEFAULT '',
+                    source_refs_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_threat_findings_created ON threat_intel_findings(created_at DESC);
+                CREATE TABLE IF NOT EXISTS quarantined_downloads (
+                    id TEXT PRIMARY KEY,
+                    source_url TEXT NOT NULL,
+                    via_network TEXT NOT NULL DEFAULT 'clearnet',
+                    original_filename TEXT NOT NULL,
+                    quarantine_path TEXT NOT NULL,
+                    extracted_dir TEXT NOT NULL DEFAULT '',
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    sha256 TEXT NOT NULL,
+                    sha512 TEXT NOT NULL DEFAULT '',
+                    detected_mime TEXT NOT NULL DEFAULT 'application/octet-stream',
+                    signature_status TEXT NOT NULL DEFAULT 'not_provided',
+                    clamav_status TEXT NOT NULL DEFAULT 'not_scanned',
+                    static_analysis_json TEXT NOT NULL DEFAULT '{}',
+                    duplicate_of_id TEXT NOT NULL DEFAULT '',
+                    auto_executed INTEGER NOT NULL DEFAULT 0,
+                    provenance_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_quarantined_sha ON quarantined_downloads(sha256);
+                CREATE TABLE IF NOT EXISTS onion_hosting_plans (
+                    id TEXT PRIMARY KEY,
+                    service_name TEXT NOT NULL UNIQUE,
+                    local_bind_host TEXT NOT NULL DEFAULT '127.0.0.1',
+                    local_bind_port INTEGER NOT NULL,
+                    virtual_port INTEGER NOT NULL DEFAULT 80,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    key_vault_ref TEXT NOT NULL DEFAULT '',
+                    torrc_snippet TEXT NOT NULL DEFAULT '',
+                    deployment_plan_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS research_monitors (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    topic_or_query TEXT NOT NULL,
+                    allowed_sources_json TEXT NOT NULL DEFAULT '[]',
+                    asset_targets_json TEXT NOT NULL DEFAULT '[]',
+                    interval_seconds INTEGER NOT NULL DEFAULT 3600,
+                    rate_limit_per_hour INTEGER NOT NULL DEFAULT 6,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    checkpoint_hash TEXT NOT NULL DEFAULT '',
+                    last_run_at TEXT NOT NULL DEFAULT '',
+                    last_success_at TEXT NOT NULL DEFAULT '',
+                    last_summary TEXT NOT NULL DEFAULT '',
+                    alert_condition TEXT NOT NULL DEFAULT 'any_change',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_research_monitors_enabled ON research_monitors(enabled, updated_at DESC);
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -3141,3 +3247,433 @@ class Database:
                 (_dump(policy), int(next_safe), next_reason, now),
             )
         return self.get_startup_recovery_policy()
+
+    # ------------------------------------------------- §165 Privacy, Tor & OSINT
+
+    def get_privacy_network_config(self, default_routing: dict[str, str] | None = None) -> dict[str, Any]:
+        now = utc_now()
+        init_routing = default_routing or {}
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO privacy_network_config (
+                    id, tor_enabled, socks_host, socks_port, control_port,
+                    tor_browser_path, onion_hosting_enabled, component_routing_json, updated_at
+                ) VALUES (1, 0, '127.0.0.1', 9050, 9051, '', 0, ?, ?)
+                """,
+                (_dump(init_routing), now),
+            )
+            r = conn.execute("SELECT * FROM privacy_network_config WHERE id = 1").fetchone()
+        if r is None:
+            return {
+                "tor_enabled": False,
+                "socks_host": "127.0.0.1",
+                "socks_port": 9050,
+                "control_port": 9051,
+                "tor_browser_path": "",
+                "onion_hosting_enabled": False,
+                "component_routing": dict(init_routing),
+                "updated_at": now,
+            }
+        saved_routing = json.loads(r["component_routing_json"] or "{}")
+        return {
+            "tor_enabled": bool(r["tor_enabled"]),
+            "socks_host": str(r["socks_host"]),
+            "socks_port": int(r["socks_port"]),
+            "control_port": int(r["control_port"]),
+            "tor_browser_path": str(r["tor_browser_path"]),
+            "onion_hosting_enabled": bool(r["onion_hosting_enabled"]),
+            "component_routing": {**init_routing, **saved_routing},
+            "updated_at": str(r["updated_at"]),
+        }
+
+    def update_privacy_network_config(self, updates: dict[str, Any], *, default_routing: dict[str, str] | None = None) -> dict[str, Any]:
+        cur = self.get_privacy_network_config(default_routing=default_routing)
+        next_routing = {**cur["component_routing"], **dict(updates.get("component_routing") or {})}
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE privacy_network_config SET
+                    tor_enabled = ?,
+                    socks_host = ?,
+                    socks_port = ?,
+                    control_port = ?,
+                    tor_browser_path = ?,
+                    onion_hosting_enabled = ?,
+                    component_routing_json = ?,
+                    updated_at = ?
+                WHERE id = 1
+                """,
+                (
+                    int(bool(updates.get("tor_enabled", cur["tor_enabled"]))),
+                    str(updates.get("socks_host", cur["socks_host"]))[:255],
+                    max(1, min(int(updates.get("socks_port", cur["socks_port"])), 65535)),
+                    max(1, min(int(updates.get("control_port", cur["control_port"])), 65535)),
+                    str(updates.get("tor_browser_path", cur["tor_browser_path"]))[:500],
+                    int(bool(updates.get("onion_hosting_enabled", cur["onion_hosting_enabled"]))),
+                    _dump(next_routing),
+                    now,
+                ),
+            )
+        return self.get_privacy_network_config(default_routing=default_routing)
+
+    def save_onion_bookmark(self, item: dict[str, Any]) -> dict[str, Any]:
+        bid = str(item.get("id") or f"onion-{uuid.uuid4().hex[:12]}")
+        addr = str(item["onion_address"]).strip().lower()[:128]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO onion_bookmarks (
+                    id, onion_address, title, source_obtained_from, official_reference_url,
+                    trust_status, reachability_status, last_http_status, last_accessed_at,
+                    notes, metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(onion_address) DO UPDATE SET
+                    title=excluded.title,
+                    source_obtained_from=excluded.source_obtained_from,
+                    official_reference_url=excluded.official_reference_url,
+                    trust_status=excluded.trust_status,
+                    reachability_status=excluded.reachability_status,
+                    last_http_status=excluded.last_http_status,
+                    last_accessed_at=excluded.last_accessed_at,
+                    notes=excluded.notes,
+                    metadata_json=excluded.metadata_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    bid,
+                    addr,
+                    str(item.get("title") or "")[:300],
+                    str(item.get("source_obtained_from") or "user_supplied")[:300],
+                    str(item.get("official_reference_url") or "")[:500],
+                    str(item.get("trust_status") or "unverified")[:48],
+                    str(item.get("reachability_status") or "unchecked")[:48],
+                    item.get("last_http_status"),
+                    str(item.get("last_accessed_at") or ""),
+                    str(item.get("notes") or "")[:1000],
+                    _dump(item.get("metadata") or {}),
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM onion_bookmarks WHERE onion_address = ?", (addr,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["metadata"] = json.loads(d.pop("metadata_json") or "{}")
+        return d
+
+    def list_onion_bookmarks(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM onion_bookmarks ORDER BY updated_at DESC LIMIT ?",
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["metadata"] = json.loads(d.pop("metadata_json") or "{}")
+            out.append(d)
+        return out
+
+    def delete_onion_bookmark(self, addr_or_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM onion_bookmarks WHERE id = ? OR onion_address = ?",
+                (addr_or_id, addr_or_id.strip().lower()),
+            )
+            return cur.rowcount > 0
+
+    def add_internet_search_run(self, entry: dict[str, Any]) -> dict[str, Any]:
+        sid = str(entry.get("id") or f"srun-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO internet_search_runs (
+                    id, query, mode, sources_consulted_json, sources_skipped_json,
+                    query_limitations_json, retrieval_errors_json, result_count, report_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sid,
+                    str(entry.get("query") or "")[:1000],
+                    str(entry.get("mode") or "unified_search")[:48],
+                    _dump(entry.get("sources_consulted") or []),
+                    _dump(entry.get("sources_skipped") or []),
+                    _dump(entry.get("query_limitations") or []),
+                    _dump(entry.get("retrieval_errors") or []),
+                    int(entry.get("result_count", 0)),
+                    str(entry.get("report_id") or "")[:120],
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM internet_search_runs WHERE id = ?", (sid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["sources_consulted"] = json.loads(d.pop("sources_consulted_json") or "[]")
+        d["sources_skipped"] = json.loads(d.pop("sources_skipped_json") or "[]")
+        d["query_limitations"] = json.loads(d.pop("query_limitations_json") or "[]")
+        d["retrieval_errors"] = json.loads(d.pop("retrieval_errors_json") or "[]")
+        return d
+
+    def list_internet_search_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM internet_search_runs ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["sources_consulted"] = json.loads(d.pop("sources_consulted_json") or "[]")
+            d["sources_skipped"] = json.loads(d.pop("sources_skipped_json") or "[]")
+            d["query_limitations"] = json.loads(d.pop("query_limitations_json") or "[]")
+            d["retrieval_errors"] = json.loads(d.pop("retrieval_errors_json") or "[]")
+            out.append(d)
+        return out
+
+    def add_threat_intel_finding(self, item: dict[str, Any]) -> dict[str, Any]:
+        fid = str(item.get("id") or f"tif-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO threat_intel_findings (
+                    id, finding_kind, source_classification, confidence_tier, severity,
+                    asset_scope, indicators_json, summary, remediation, source_refs_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    fid,
+                    str(item.get("finding_kind") or "advisory")[:64],
+                    str(item.get("source_classification") or "external_report")[:64],
+                    str(item.get("confidence_tier") or "claim")[:32],
+                    str(item.get("severity") or "info")[:24],
+                    str(item.get("asset_scope") or "")[:200],
+                    _dump(item.get("indicators") or {}),
+                    str(item.get("summary") or "")[:4000],
+                    str(item.get("remediation") or "")[:2000],
+                    _dump(item.get("source_refs") or []),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM threat_intel_findings WHERE id = ?", (fid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["indicators"] = json.loads(d.pop("indicators_json") or "{}")
+        d["source_refs"] = json.loads(d.pop("source_refs_json") or "[]")
+        return d
+
+    def list_threat_intel_findings(self, *, asset_scope: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM threat_intel_findings"
+        params: list[Any] = []
+        if asset_scope:
+            sql += " WHERE LOWER(asset_scope) = ?"
+            params.append(asset_scope.strip().lower())
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["indicators"] = json.loads(d.pop("indicators_json") or "{}")
+            d["source_refs"] = json.loads(d.pop("source_refs_json") or "[]")
+            out.append(d)
+        return out
+
+    def save_quarantined_download(self, item: dict[str, Any]) -> dict[str, Any]:
+        qid = str(item.get("id") or f"qdl-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO quarantined_downloads (
+                    id, source_url, via_network, original_filename, quarantine_path,
+                    extracted_dir, size_bytes, sha256, sha512, detected_mime,
+                    signature_status, clamav_status, static_analysis_json,
+                    duplicate_of_id, auto_executed, provenance_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    qid,
+                    str(item.get("source_url") or "")[:1000],
+                    str(item.get("via_network") or "clearnet")[:32],
+                    str(item.get("original_filename") or "download.bin")[:255],
+                    str(item.get("quarantine_path") or "")[:500],
+                    str(item.get("extracted_dir") or "")[:500],
+                    int(item.get("size_bytes", 0)),
+                    str(item["sha256"])[:64],
+                    str(item.get("sha512") or "")[:128],
+                    str(item.get("detected_mime") or "application/octet-stream")[:120],
+                    str(item.get("signature_status") or "not_provided")[:64],
+                    str(item.get("clamav_status") or "not_scanned")[:64],
+                    _dump(item.get("static_analysis") or {}),
+                    str(item.get("duplicate_of_id") or "")[:64],
+                    _dump(item.get("provenance") or {}),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM quarantined_downloads WHERE id = ?", (qid,)).fetchone()
+        return self._unpack_quarantined(r) if r else {}
+
+    @staticmethod
+    def _unpack_quarantined(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["auto_executed"] = bool(d["auto_executed"])
+        d["static_analysis"] = json.loads(d.pop("static_analysis_json") or "{}")
+        d["provenance"] = json.loads(d.pop("provenance_json") or "{}")
+        return d
+
+    def find_quarantined_by_sha256(self, sha256_hex: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute(
+                "SELECT * FROM quarantined_downloads WHERE sha256 = ? ORDER BY created_at ASC LIMIT 1",
+                (sha256_hex,),
+            ).fetchone()
+        return self._unpack_quarantined(r) if r else None
+
+    def list_quarantined_downloads(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM quarantined_downloads ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        return [self._unpack_quarantined(r) for r in rows]
+
+    def save_onion_hosting_plan(self, item: dict[str, Any]) -> dict[str, Any]:
+        pid = str(item.get("id") or f"ohost-{uuid.uuid4().hex[:10]}")
+        sname = str(item["service_name"]).strip()[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO onion_hosting_plans (
+                    id, service_name, local_bind_host, local_bind_port, virtual_port,
+                    enabled, key_vault_ref, torrc_snippet, deployment_plan_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(service_name) DO UPDATE SET
+                    local_bind_host=excluded.local_bind_host,
+                    local_bind_port=excluded.local_bind_port,
+                    virtual_port=excluded.virtual_port,
+                    enabled=excluded.enabled,
+                    key_vault_ref=excluded.key_vault_ref,
+                    torrc_snippet=excluded.torrc_snippet,
+                    deployment_plan_json=excluded.deployment_plan_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    pid,
+                    sname,
+                    str(item.get("local_bind_host") or "127.0.0.1")[:64],
+                    int(item["local_bind_port"]),
+                    int(item.get("virtual_port", 80)),
+                    int(bool(item.get("enabled", False))),
+                    str(item.get("key_vault_ref") or "")[:120],
+                    str(item.get("torrc_snippet") or "")[:4000],
+                    _dump(item.get("deployment_plan") or {}),
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM onion_hosting_plans WHERE service_name = ?", (sname,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["enabled"] = bool(d["enabled"])
+        d["deployment_plan"] = json.loads(d.pop("deployment_plan_json") or "{}")
+        return d
+
+    def list_onion_hosting_plans(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM onion_hosting_plans ORDER BY service_name ASC").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["enabled"] = bool(d["enabled"])
+            d["deployment_plan"] = json.loads(d.pop("deployment_plan_json") or "{}")
+            out.append(d)
+        return out
+
+    def save_research_monitor(self, item: dict[str, Any]) -> dict[str, Any]:
+        mid = str(item.get("id") or f"rmon-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO research_monitors (
+                    id, name, topic_or_query, allowed_sources_json, asset_targets_json,
+                    interval_seconds, rate_limit_per_hour, enabled, checkpoint_hash,
+                    last_run_at, last_success_at, last_summary, alert_condition,
+                    metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,
+                    topic_or_query=excluded.topic_or_query,
+                    allowed_sources_json=excluded.allowed_sources_json,
+                    asset_targets_json=excluded.asset_targets_json,
+                    interval_seconds=excluded.interval_seconds,
+                    rate_limit_per_hour=excluded.rate_limit_per_hour,
+                    enabled=excluded.enabled,
+                    checkpoint_hash=excluded.checkpoint_hash,
+                    last_run_at=excluded.last_run_at,
+                    last_success_at=excluded.last_success_at,
+                    last_summary=excluded.last_summary,
+                    alert_condition=excluded.alert_condition,
+                    metadata_json=excluded.metadata_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    mid,
+                    str(item["name"])[:200],
+                    str(item["topic_or_query"])[:1000],
+                    _dump(item.get("allowed_sources") or []),
+                    _dump(item.get("asset_targets") or []),
+                    max(60, int(item.get("interval_seconds", 3600))),
+                    max(1, min(int(item.get("rate_limit_per_hour", 6)), 120)),
+                    int(bool(item.get("enabled", True))),
+                    str(item.get("checkpoint_hash") or "")[:128],
+                    str(item.get("last_run_at") or ""),
+                    str(item.get("last_success_at") or ""),
+                    str(item.get("last_summary") or "")[:2000],
+                    str(item.get("alert_condition") or "any_change")[:120],
+                    _dump(item.get("metadata") or {}),
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM research_monitors WHERE id = ?", (mid,)).fetchone()
+        return self._unpack_research_monitor(r) if r else {}
+
+    @staticmethod
+    def _unpack_research_monitor(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["enabled"] = bool(d["enabled"])
+        d["allowed_sources"] = json.loads(d.pop("allowed_sources_json") or "[]")
+        d["asset_targets"] = json.loads(d.pop("asset_targets_json") or "[]")
+        d["metadata"] = json.loads(d.pop("metadata_json") or "{}")
+        return d
+
+    def get_research_monitor(self, monitor_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM research_monitors WHERE id = ?", (monitor_id,)).fetchone()
+        return self._unpack_research_monitor(r) if r else None
+
+    def list_research_monitors(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM research_monitors"
+        if enabled_only:
+            sql += " WHERE enabled = 1"
+        sql += " ORDER BY updated_at DESC"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [self._unpack_research_monitor(r) for r in rows]
+
+    def delete_research_monitor(self, monitor_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute("DELETE FROM research_monitors WHERE id = ?", (monitor_id,))
+            return cur.rowcount > 0

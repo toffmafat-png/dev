@@ -62,6 +62,7 @@ install -m 0644 "$ROOT/packaging/debian/README.Debian" "$PKG/usr/share/doc/nova-
 install -m 0644 "$ROOT/docs/NATIVE_DESKTOP.md" "$PKG/usr/share/doc/nova-x-desktop/README.native"
 install -m 0644 "$ROOT/docs/UNIFIED_OS.md" "$PKG/usr/share/doc/nova-x-desktop/UNIFIED_OS.md"
 install -m 0644 "$ROOT/docs/SYSTEM_ACCESS.md" "$PKG/usr/share/doc/nova-x-desktop/SYSTEM_ACCESS.md"
+install -m 0644 "$ROOT/docs/PRIVACY_INTEL.md" "$PKG/usr/share/doc/nova-x-desktop/PRIVACY_INTEL.md"
 install -m 0644 "$ROOT/README.md" "$PKG/usr/share/doc/nova-x-desktop/README.upstream"
 
 install -d "$OUT_DIR"

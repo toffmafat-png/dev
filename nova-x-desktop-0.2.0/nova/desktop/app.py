@@ -194,6 +194,7 @@ class NovaWindow(QMainWindow):
             ("studio", "Creation studio"),
             ("control_center", "OS control center"),
             ("infrastructure", "Hardware & servers"),
+            ("privacy_intel", "Tor & OSINT"),
             ("tasks", "Tasks & plans"),
             ("commands", "Local commands"),
             ("history", "Command history"),
@@ -234,6 +235,7 @@ class NovaWindow(QMainWindow):
             ("studio", self._build_studio_page),
             ("control_center", self._build_control_center_page),
             ("infrastructure", self._build_infrastructure_page),
+            ("privacy_intel", self._build_privacy_intel_page),
             ("tasks", self._build_tasks_page),
             ("commands", self._build_commands_page),
             ("history", self._build_history_page),
@@ -265,6 +267,8 @@ class NovaWindow(QMainWindow):
             self._refresh_control_center()
         elif key == "infrastructure":
             self._refresh_infrastructure()
+        elif key == "privacy_intel":
+            self._refresh_privacy_intel()
         elif key == "history":
             self._refresh_history()
         elif key == "models":
@@ -2023,6 +2027,118 @@ class NovaWindow(QMainWindow):
         else:
             studio.start_recording(title="Desktop Studio Capture", fps=10, user_initiated=True)
         self._refresh_infrastructure()
+
+    def _build_privacy_intel_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.addWidget(
+            _page_header(
+                "Tor Network, Legitimate .onion Research & Defensive OSINT (§165)",
+                "Isolated Tor SOCKS5h routing (§165.1), v3 .onion verification (§165.2), 11-category unified search (§165.3), 12-step research assistant (§165.4), defensive threat intel (§165.5–§165.6), and 0400 file quarantine (§165.7).",
+            )
+        )
+
+        top_bar = QHBoxLayout()
+        self.priv_tor_pill = _label("TOR INTEGRATION DISABLED", "statusPill")
+        top_bar.addWidget(self.priv_tor_pill)
+        self.priv_monitor_pill = _label("Monitors: 0", "statusPill")
+        top_bar.addWidget(self.priv_monitor_pill)
+        top_bar.addStretch(1)
+        self.priv_toggle_tor_btn = QPushButton("Enable Tor integration")
+        self.priv_toggle_tor_btn.setProperty("primary", True)
+        self.priv_toggle_tor_btn.clicked.connect(self._priv_toggle_tor)
+        top_bar.addWidget(self.priv_toggle_tor_btn)
+        tb_btn = QPushButton("Launch Tor Browser")
+        tb_btn.clicked.connect(self._priv_launch_tor_browser)
+        top_bar.addWidget(tb_btn)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._refresh_privacy_intel)
+        top_bar.addWidget(refresh_btn)
+        layout.addLayout(top_bar)
+
+        _, net_card = _card(layout)
+        net_card.addWidget(_label("Privacy-Aware Network Routing Dashboard & Anonymity Disclosures (§165.8)", "sectionTitle"))
+        self.priv_dashboard_box = _read_only_text(145)
+        net_card.addWidget(self.priv_dashboard_box)
+
+        _, res_card = _card(layout)
+        q_row = QHBoxLayout()
+        self.priv_research_input = QLineEdit()
+        self.priv_research_input.setPlaceholderText("Enter OSINT / CVE / authorized v3 .onion research question…")
+        self.priv_research_input.returnPressed.connect(self._priv_run_research)
+        q_row.addWidget(self.priv_research_input, 1)
+        run_res_btn = QPushButton("Run 12-step research")
+        run_res_btn.clicked.connect(self._priv_run_research)
+        q_row.addWidget(run_res_btn)
+        res_card.addLayout(q_row)
+        self.priv_intel_box = _read_only_text(185)
+        res_card.addWidget(self.priv_intel_box)
+        return page
+
+    def _refresh_privacy_intel(self) -> None:
+        snap = self.runtime.privacy_intel_snapshot()
+        tstat = snap["tor_status"]
+        dash = snap["privacy_dashboard"]
+        mons = snap["research_monitors"]
+
+        self.priv_tor_pill.setText(tstat["status_indicator"])
+        self.priv_toggle_tor_btn.setText(
+            "Disable Tor integration" if tstat["tor_integration_enabled"] else "Enable Tor integration"
+        )
+        self.priv_monitor_pill.setText(
+            f"Monitors: {mons['enabled_count']}/{mons['monitor_count']} · Scheduler={'ACTIVE' if mons['continuous_monitoring_active'] else 'STOPPED'}"
+        )
+
+        comp_lines = [
+            f"Tor Binary: {'installed (' + tstat['tor_binary'] + ')' if tstat['tor_installed'] else 'not installed'} · Service={tstat['tor_service_state']} · SOCKS5h={dash['socks5_endpoint']} ({'reachable' if dash['socks5_reachable'] else 'unreachable'}) · System-wide Tor={dash['system_wide_tor_routing']}",
+            *[
+                f"  • {cname}: mode={cdata['configured_mode']} | uses_tor={cdata['uses_tor']}"
+                for cname, cdata in dash["components"].items()
+            ],
+            f"Limitation: {dash['anonymity_and_coverage_limitations'][0]}",
+        ]
+        self.priv_dashboard_box.setPlainText("\n".join(comp_lines))
+
+        intel_lines = [
+            f"Saved v3 .onion Bookmarks: {snap['onion_bookmarks_count']} · Onion Hosting Enabled: {snap['onion_hosting_enabled']} (admin API exposure blocked)",
+            f"Defensive Threat Findings: {snap['threat_findings_count']} (external claims strictly separated from verified local observations)",
+            f"Quarantined Downloads: {snap['quarantined_downloads_count']} (0700 dir / 0400 non-executable; auto_executed=False)",
+            f"Monitor Honesty Note: {mons['honest_scheduler_disclosure']}",
+        ]
+        if tstat["setup_instructions"]:
+            intel_lines.append("Kali Setup Hint: " + tstat["setup_instructions"][0])
+        self.priv_intel_box.setPlainText("\n".join(intel_lines))
+
+    def _priv_toggle_tor(self) -> None:
+        cur = self.runtime.privacy_intel.tor.get_config()["tor_enabled"]
+        self.runtime.privacy_intel.tor.update_config({"tor_enabled": not cur})
+        self._refresh_privacy_intel()
+
+    def _priv_launch_tor_browser(self) -> None:
+        res = self.runtime.privacy_intel.tor.launch_tor_browser(approved=True)
+        self.priv_intel_box.appendPlainText(
+            f"\n[Tor Browser] status={res['status']} — {res.get('reason') or res.get('argv')}"
+        )
+
+    def _priv_run_research(self) -> None:
+        q = self.priv_research_input.text().strip()
+        if not q:
+            self._show_error("Enter a research question first.")
+            return
+        guard = self.runtime.privacy_intel.check_ethics(q)
+        if not guard["allowed"]:
+            self._show_error(guard["reason"])
+            return
+        rep = self.runtime.privacy_intel.research_assistant.conduct_research(q)
+        ep = rep["epistemic_separation"]
+        self.priv_intel_box.setPlainText(
+            f"Report {rep['report_id']} saved to KnowledgeStore ({rep['knowledge_base_doc_id']})\n"
+            f"Verified Facts ({len(ep['verified_facts'])}) · Unverified Claims ({len(ep['claims'])}) · "
+            f"Contradictions ({len(rep['contradictions'])}) · Scam/Risk Flags ({len(rep['scam_and_unsupported_flags'])})\n\n"
+            + rep["markdown_report"][:2400]
+        )
 
     def _emergency_stop(self) -> None:
         if QMessageBox.question(self, "Emergency stop", "Cancel all active tasks and terminate active NOVA child processes? This does not undo changes already made.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:

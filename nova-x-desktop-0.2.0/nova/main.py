@@ -624,6 +624,118 @@ def _system_access_health(app_state: Any) -> dict[str, Any]:
     return base
 
 
+def _privacy_intel_health(app_state: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "tor_enabled": False,
+        "onion_hosting_enabled": False,
+        "system_wide_tor_routing": False,
+        "continuous_monitoring_active": False,
+        "quarantined_downloads": 0,
+        "degraded": True,
+        "detail": "/api/privacy/status",
+    }
+    try:
+        platform_svc = getattr(app_state, "platform", None) or getattr(getattr(app_state, "engine", None), "platform", None)
+        priv = getattr(platform_svc, "privacy_intel", None) if platform_svc is not None else None
+        if priv is None:
+            return base
+        cfg = priv.tor.get_config()
+        base["tor_enabled"] = bool(cfg.get("tor_enabled", False))
+        base["onion_hosting_enabled"] = bool(cfg.get("onion_hosting_enabled", False))
+        base["continuous_monitoring_active"] = bool(priv.monitors.status_snapshot().get("continuous_monitoring_active", False))
+        base["quarantined_downloads"] = len(priv.db.list_quarantined_downloads(limit=200))
+        base["degraded"] = False
+    except Exception:
+        base["degraded"] = True
+    return base
+
+
+class PrivacyConfigApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tor_enabled: bool | None = None
+    socks_host: str | None = Field(default=None, max_length=255)
+    socks_port: int | None = Field(default=None, ge=1, le=65535)
+    control_port: int | None = Field(default=None, ge=1, le=65535)
+    tor_browser_path: str | None = Field(default=None, max_length=500)
+    onion_hosting_enabled: bool | None = None
+    component_routing: dict[str, str] | None = None
+
+
+class OnionOpenApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(..., min_length=8, max_length=1000)
+    source_obtained_from: str = Field(default="api_request", max_length=200)
+
+
+class OnionVerifyApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    candidate_onion: str = Field(..., min_length=8, max_length=500)
+    documented_official_onion: str = Field(..., min_length=8, max_length=500)
+    reference_source: str = Field(default="", max_length=500)
+
+
+class PrivacySearchApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    query: str = Field(..., min_length=1, max_length=1000)
+    categories: list[str] | None = None
+    explicit_urls: list[str] | None = None
+
+
+class DarkWebResearchApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    question: str = Field(..., min_length=3, max_length=1000)
+    explicit_urls: list[str] | None = None
+    categories: list[str] | None = None
+    save_to_kb: bool = True
+
+
+class ThreatAnalyzeApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(default="External Advisory", max_length=240)
+    advisory_text: str = Field(default="", max_length=20_000)
+    source_url: str = Field(default="external://advisory", max_length=500)
+    is_official_vendor_or_cert: bool = False
+    severity: str = Field(default="medium", max_length=24)
+    log_text: str = Field(default="", max_length=50_000)
+    log_source_label: str = Field(default="supplied_log", max_length=200)
+    watch_indicators: list[str] | None = None
+
+
+class ExposureAssessApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    organization_name: str = Field(..., min_length=1, max_length=160)
+    authorized_domains: list[str] = Field(default_factory=list)
+    operator_authorized: bool = False
+    external_posts_or_notices: list[dict[str, Any]] = Field(default_factory=list)
+    local_scan_paths: list[str] = Field(default_factory=list)
+
+
+class QuarantineUrlApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(..., min_length=8, max_length=1000)
+    max_bytes: int | None = Field(default=None, ge=1024, le=52_428_800)
+    extract_archive_isolated: bool = False
+
+
+class OnionHostingPlanApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    service_name: str = Field(..., min_length=2, max_length=48)
+    local_bind_host: str = Field(default="127.0.0.1", max_length=64)
+    local_bind_port: int = Field(..., ge=1, le=65535)
+    virtual_port: int = Field(default=80, ge=1, le=65535)
+    operator_approved: bool = False
+
+
+class ResearchMonitorApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(..., min_length=2, max_length=200)
+    topic_or_query: str = Field(..., min_length=2, max_length=1000)
+    allowed_sources: list[str] | None = None
+    asset_targets: list[str] | None = None
+    interval_seconds: int = Field(default=3600, ge=60, le=604_800)
+    rate_limit_per_hour: int = Field(default=6, ge=1, le=60)
+
+
 def create_app(
     settings: Settings | None = None,
     provider: Any | None = None,
@@ -805,6 +917,7 @@ def create_app(
             "creation": _creation_health(app.state),
             "unified_os": _unified_os_health(app.state),
             "system_access": _system_access_health(app.state),
+            "privacy_intel": _privacy_intel_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -1993,6 +2106,151 @@ def create_app(
     @app.get("/api/system/nodes")
     async def system_nodes_list() -> dict[str, Any]:
         return {"nodes": database.list_remote_nodes()}
+
+    # ------------------------------------------------- §165 Privacy, Tor & OSINT
+
+    @app.get("/api/privacy/status")
+    async def privacy_intel_status() -> dict[str, Any]:
+        return engine.platform.privacy_intel.status_summary()
+
+    @app.get("/api/privacy/dashboard")
+    async def privacy_intel_dashboard() -> dict[str, Any]:
+        return engine.platform.privacy_intel.tor.privacy_dashboard()
+
+    @app.put("/api/privacy/config")
+    async def privacy_intel_update_config(payload: PrivacyConfigApiRequest) -> dict[str, Any]:
+        updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+        try:
+            return {"config": engine.platform.privacy_intel.tor.update_config(updates)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/privacy/onion/bookmarks")
+    async def privacy_onion_bookmarks(limit: int = 100) -> dict[str, Any]:
+        return {"bookmarks": database.list_onion_bookmarks(limit=limit)}
+
+    @app.post("/api/privacy/onion/open")
+    async def privacy_onion_open(payload: OnionOpenApiRequest) -> dict[str, Any]:
+        guard = engine.platform.privacy_intel.check_ethics(payload.url)
+        if not guard["allowed"]:
+            raise HTTPException(status_code=403, detail=guard["reason"])
+        return engine.platform.privacy_intel.onion_browser.open_onion_page(
+            payload.url,
+            source_obtained_from=payload.source_obtained_from,
+        )
+
+    @app.post("/api/privacy/onion/verify")
+    async def privacy_onion_verify(payload: OnionVerifyApiRequest) -> dict[str, Any]:
+        return engine.platform.privacy_intel.onion_browser.verify_against_official_reference(
+            payload.candidate_onion,
+            payload.documented_official_onion,
+            reference_source=payload.reference_source,
+        )
+
+    @app.post("/api/privacy/search")
+    async def privacy_unified_search(payload: PrivacySearchApiRequest) -> dict[str, Any]:
+        guard = engine.platform.privacy_intel.check_ethics(payload.query)
+        if not guard["allowed"]:
+            raise HTTPException(status_code=403, detail=guard["reason"])
+        return engine.platform.privacy_intel.search.search(
+            payload.query,
+            categories=payload.categories,
+            explicit_urls=payload.explicit_urls,
+        )
+
+    @app.post("/api/privacy/research")
+    async def privacy_dark_web_research(payload: DarkWebResearchApiRequest) -> dict[str, Any]:
+        guard = engine.platform.privacy_intel.check_ethics(payload.question)
+        if not guard["allowed"]:
+            raise HTTPException(status_code=403, detail=guard["reason"])
+        return engine.platform.privacy_intel.research_assistant.conduct_research(
+            payload.question,
+            explicit_urls=payload.explicit_urls,
+            categories=payload.categories,
+            save_to_kb=payload.save_to_kb,
+        )
+
+    @app.post("/api/privacy/threat/analyze")
+    async def privacy_threat_analyze(payload: ThreatAnalyzeApiRequest) -> dict[str, Any]:
+        svc = engine.platform.privacy_intel
+        if payload.log_text.strip():
+            return svc.threat_intel.analyze_supplied_logs(
+                payload.log_text,
+                log_source_label=payload.log_source_label,
+                watch_indicators=payload.watch_indicators,
+            )
+        res = svc.threat_intel.ingest_external_advisory(
+            title=payload.title,
+            advisory_text=payload.advisory_text,
+            source_url=payload.source_url,
+            is_official_vendor_or_cert=payload.is_official_vendor_or_cert,
+            severity=payload.severity,
+        )
+        if not res.get("ok"):
+            raise HTTPException(status_code=403, detail=str(res.get("reason") or "Blocked"))
+        return res
+
+    @app.post("/api/privacy/exposure/assess")
+    async def privacy_exposure_assess(payload: ExposureAssessApiRequest) -> dict[str, Any]:
+        res = engine.platform.privacy_intel.exposure_monitor.assess_authorized_exposure(
+            organization_name=payload.organization_name,
+            authorized_domains=payload.authorized_domains,
+            operator_authorized=payload.operator_authorized,
+            external_posts_or_notices=payload.external_posts_or_notices,
+            local_scan_paths=payload.local_scan_paths,
+        )
+        if res.get("status") == "blocked_by_ethics_guardrail":
+            raise HTTPException(status_code=403, detail=str(res.get("reason") or "Blocked"))
+        return res
+
+    @app.get("/api/privacy/quarantine")
+    async def privacy_quarantine_list(limit: int = 50) -> dict[str, Any]:
+        return {"quarantined_downloads": database.list_quarantined_downloads(limit=limit)}
+
+    @app.post("/api/privacy/quarantine/download")
+    async def privacy_quarantine_download(payload: QuarantineUrlApiRequest) -> dict[str, Any]:
+        return engine.platform.privacy_intel.downloads.download_and_quarantine_url(
+            payload.url,
+            max_bytes=payload.max_bytes,
+            extract_archive_isolated=payload.extract_archive_isolated,
+        )
+
+    @app.post("/api/privacy/onion-hosting/plan")
+    async def privacy_onion_hosting_plan(payload: OnionHostingPlanApiRequest) -> dict[str, Any]:
+        return engine.platform.privacy_intel.onion_hosting.prepare_onion_service_plan(
+            service_name=payload.service_name,
+            local_bind_host=payload.local_bind_host,
+            local_bind_port=payload.local_bind_port,
+            virtual_port=payload.virtual_port,
+            operator_approved=payload.operator_approved,
+        )
+
+    @app.get("/api/privacy/monitors")
+    async def privacy_monitors_list() -> dict[str, Any]:
+        return engine.platform.privacy_intel.monitors.status_snapshot()
+
+    @app.post("/api/privacy/monitors")
+    async def privacy_monitors_create(payload: ResearchMonitorApiRequest) -> dict[str, Any]:
+        try:
+            return {
+                "monitor": engine.platform.privacy_intel.monitors.create_monitor(
+                    name=payload.name,
+                    topic_or_query=payload.topic_or_query,
+                    allowed_sources=payload.allowed_sources,
+                    asset_targets=payload.asset_targets,
+                    interval_seconds=payload.interval_seconds,
+                    rate_limit_per_hour=payload.rate_limit_per_hour,
+                )
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/privacy/monitors/{monitor_id}/run")
+    async def privacy_monitors_run(monitor_id: str) -> dict[str, Any]:
+        res = engine.platform.privacy_intel.monitors.run_monitor_once(monitor_id)
+        if res.get("status") == "not_found":
+            raise HTTPException(status_code=404, detail=res["reason"])
+        return res
 
     return app
 
