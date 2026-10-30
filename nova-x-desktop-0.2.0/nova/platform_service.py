@@ -25,6 +25,7 @@ from nova.events import Event, EventBus
 from nova.governance import PrivacyGovernor, SystemHealthCenter
 from nova.hybrid_cloud.service import HybridCloudIntelligenceService, register_hybrid_cloud_tools
 from nova.intelligence import IntelligenceOrchestrator, ModelManager
+from nova.kali_intel.service import KaliIntelligenceService
 from nova.knowledge import KnowledgeStore
 from nova.mcp_client import IntegrationGateway, IntegrationRecord, MCPClientManager
 from nova.memory_hub import SharedMemorySystem
@@ -43,6 +44,7 @@ from nova.self_improvement import ControlledImprovementEngine
 from nova.system_access.service import SystemAccessService
 from nova.terminal import TerminalWorkspace
 from nova.tools.creation import build_creation_tools
+from nova.tools.kali_intel import build_kali_intel_tools
 from nova.tools.privacy_intel import build_privacy_intel_tools
 from nova.tools.registry import ToolRegistry
 from nova.tools.system_access import build_system_access_tools
@@ -302,6 +304,17 @@ class PlatformService:
             app_root=resolved_repo,
         )
         register_hybrid_cloud_tools(self.tools, self.hybrid_cloud)
+        self.kali_intel = KaliIntelligenceService(
+            db=self.db,
+            workspace_dir=workspace_dir,
+            knowledge_store=self.knowledge,
+            autonomy_policy=self.autonomy_policy,
+            hybrid_cloud=self.hybrid_cloud,
+            redactor=self.redactor,
+        )
+        for ki_tool in build_kali_intel_tools(lambda: self.kali_intel):
+            if self.tools.get(ki_tool.name) is None:
+                self.tools.register(ki_tool)
 
     def _register_baseline_integrations(self) -> None:
         self.gateway.register(

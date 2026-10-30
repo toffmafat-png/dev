@@ -673,6 +673,80 @@ def _hybrid_cloud_health(app_state: Any) -> dict[str, Any]:
     return base
 
 
+def _kali_intel_health(app_state: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "sections": "181-200",
+        "unified_single_architecture": True,
+        "indexed_profiles": 0,
+        "indexed_docs": 0,
+        "degraded": True,
+        "detail": "/api/kali/status",
+    }
+    try:
+        platform_svc = getattr(app_state, "platform", None) or getattr(getattr(app_state, "engine", None), "platform", None)
+        ki = getattr(platform_svc, "kali_intel", None) if platform_svc is not None else None
+        if ki is None:
+            return base
+        s = ki.status_summary()
+        base["indexed_profiles"] = int(s["indexed_tool_and_app_profiles"])
+        base["indexed_docs"] = int(s["indexed_knowledge_documents"])
+        base["degraded"] = False
+    except Exception:
+        base["degraded"] = True
+    return base
+
+
+class KaliExecuteApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    objective: str = Field(min_length=2, max_length=500)
+    explicit_argv: list[str] | None = None
+    approved: bool = False
+
+
+class KaliForumSupportDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    issue_title: str = Field(min_length=3, max_length=200)
+    observed_error: str = Field(min_length=2, max_length=4000)
+    steps_reproduced: list[str] = Field(default_factory=list, max_length=20)
+    raw_log_excerpt: str = Field(default="", max_length=12000)
+
+
+class KaliLearnProgramApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command_or_path: str = Field(min_length=1, max_length=300)
+    safe_test_args: list[str] | None = None
+
+
+class KaliChainApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal: str = Field(min_length=3, max_length=500)
+    stages: list[dict[str, Any]] = Field(min_length=1, max_length=12)
+    output_filename: str = Field(default="chain_report.json", max_length=120)
+
+
+class KaliLabCreateApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=2, max_length=160)
+    purpose: str = Field(min_length=4, max_length=500)
+    requested_ram_mb: int = Field(default=256, ge=32, le=8192)
+    network_scope: str = Field(default="127.0.0.1/32", max_length=80)
+
+
+class KaliQuizGradeApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    track: str = Field(min_length=2, max_length=80)
+    selected_option: str = Field(min_length=1, max_length=4)
+
+
+class KaliExpertiseProposeApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    domain: str = Field(min_length=2, max_length=80)
+    subject: str = Field(min_length=2, max_length=200)
+    baseline_argv: list[str] = Field(default_factory=list, max_length=20)
+    improved_argv: list[str] = Field(min_length=1, max_length=20)
+    hypothesis: str = Field(min_length=3, max_length=500)
+
+
 class DynamicProviderApiRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     provider_type: str = Field(min_length=2, max_length=48)
@@ -990,6 +1064,7 @@ def create_app(
             "system_access": _system_access_health(app.state),
             "privacy_intel": _privacy_intel_health(app.state),
             "hybrid_cloud": _hybrid_cloud_health(app.state),
+            "kali_intel": _kali_intel_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -2416,6 +2491,178 @@ def create_app(
     @app.get("/api/gateway/fusion/roles")
     async def gateway_specialist_roles(objective: str = "Analyze and verify", mode: str = "frontier_fusion") -> dict[str, Any]:
         return engine.platform.hybrid_cloud.fusion.assign_specialist_roles(objective, mode=mode)
+
+    # --- Sections 181–200: Advanced Kali Linux Intelligence, Application Mastery & Universal Integration ---
+
+    @app.get("/api/kali/status")
+    async def kali_status() -> dict[str, Any]:
+        return engine.platform.kali_intel.status_summary()
+
+    @app.get("/api/kali/system")
+    async def kali_system_inspect(force_refresh: bool = False) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.system_model.get_or_refresh_model,
+            force_refresh=force_refresh,
+        )
+
+    @app.get("/api/kali/tools/search")
+    async def kali_tools_search(
+        objective: str,
+        category: str = "",
+        protocol: str = "",
+        installed_only: bool = False,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.tool_engine.search_tools_for_objective,
+            objective,
+            category=category,
+            protocol=protocol,
+            installed_only=installed_only,
+        )
+
+    @app.get("/api/kali/tools/{tool_name}")
+    async def kali_tool_profile(tool_name: str) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.tool_engine.build_tool_profile,
+            tool_name,
+        )
+
+    @app.get("/api/kali/docs/{tool_name}")
+    async def kali_tool_docs(tool_name: str) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.doc_engine.retrieve_prioritized_documentation,
+            tool_name,
+        )
+
+    @app.post("/api/kali/execute")
+    async def kali_execute_objective(payload: KaliExecuteApiRequest) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.tool_executor.execute_13_step_objective,
+            payload.objective,
+            explicit_argv=payload.explicit_argv,
+            approved=payload.approved,
+        )
+
+    @app.get("/api/kali/community/analyze")
+    async def kali_community_analyze(symptom: str) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.community_intel.analyze_troubleshooting_discussions,
+            symptom,
+        )
+
+    @app.post("/api/kali/community/support-draft")
+    async def kali_community_support_draft(payload: KaliForumSupportDraftRequest) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.community_intel.prepare_redacted_support_draft,
+            issue_title=payload.issue_title,
+            observed_error=payload.observed_error,
+            steps_reproduced=payload.steps_reproduced,
+            raw_log_excerpt=payload.raw_log_excerpt,
+        )
+
+    @app.get("/api/kali/capabilities/query")
+    async def kali_query_capabilities(question: str) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.app_registry.query_capabilities,
+            question,
+        )
+
+    @app.post("/api/kali/apps/learn")
+    async def kali_learn_program(payload: KaliLearnProgramApiRequest) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.program_learner.learn_unfamiliar_program,
+            payload.command_or_path,
+            safe_test_args=payload.safe_test_args,
+        )
+
+    @app.post("/api/kali/chains/run")
+    async def kali_run_tool_chain(payload: KaliChainApiRequest) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.chain_engine.execute_verified_tool_chain,
+            goal=payload.goal,
+            stages=payload.stages,
+            output_filename=payload.output_filename,
+        )
+
+    @app.get("/api/kali/cyber/{domain}")
+    async def kali_cyber_domain(domain: str) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                engine.platform.kali_intel.cyber_kb.explain_domain_and_installed_tools,
+                domain,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/kali/labs")
+    async def kali_list_labs() -> dict[str, Any]:
+        return {"labs": engine.platform.kali_intel.db.list_kali_cyber_labs()}
+
+    @app.post("/api/kali/labs")
+    async def kali_create_lab(payload: KaliLabCreateApiRequest) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.lab_manager.create_isolated_lab,
+            name=payload.name,
+            purpose=payload.purpose,
+            requested_ram_mb=payload.requested_ram_mb,
+            network_scope=payload.network_scope,
+        )
+
+    @app.get("/api/kali/training/lesson")
+    async def kali_training_lesson(track: str = "kali_fundamentals", level: str = "beginner") -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                engine.platform.kali_intel.training_academy.generate_lesson,
+                track,
+                level=level,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/kali/training/quiz")
+    async def kali_training_quiz(payload: KaliQuizGradeApiRequest) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                engine.platform.kali_intel.training_academy.grade_quiz_and_update_roadmap,
+                payload.track,
+                selected_option=payload.selected_option,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/kali/training/explain-command")
+    async def kali_explain_command(command: str) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.training_academy.explain_command_line_by_line,
+            command,
+        )
+
+    @app.get("/api/kali/troubleshoot")
+    async def kali_troubleshoot(symptom: str) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.troubleshooter.diagnose_13_steps,
+            symptom,
+        )
+
+    @app.get("/api/kali/dev-env/toolchains")
+    async def kali_dev_toolchains() -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.kali_intel.dev_partner.inspect_installed_toolchains,
+        )
+
+    @app.post("/api/kali/expertise/propose")
+    async def kali_propose_expertise(payload: KaliExpertiseProposeApiRequest) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                engine.platform.kali_intel.expertise_evolution.propose_and_test_improvement,
+                domain=payload.domain,
+                subject=payload.subject,
+                baseline_argv=payload.baseline_argv,
+                improved_argv=payload.improved_argv,
+                hypothesis=payload.hypothesis,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return app
 

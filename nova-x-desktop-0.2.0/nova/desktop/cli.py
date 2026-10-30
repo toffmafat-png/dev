@@ -36,6 +36,15 @@ def _parser() -> argparse.ArgumentParser:
     gw_cmd.add_argument("--transmissions", action="store_true", help="List secret-free cloud privacy transmission audit entries")
     gw_cmd.add_argument("--llama-check", default="", help="Check whether a compact quantized GGUF model fits host RAM")
     gw_cmd.add_argument("--local-project", default="", help="Mark a project key/path as local-only (blocks cloud providers)")
+    kali_cmd = subparsers.add_parser("kali", help="Kali Linux Intelligence, Tool Mastery, Docs, App Learning, Labs & Troubleshooting (§181–§200)")
+    kali_cmd.add_argument("--system", action="store_true", help="Inspect all 21 live Kali/Linux system dimensions")
+    kali_cmd.add_argument("--search", default="", help="Search Kali/Linux tools for a natural-language objective")
+    kali_cmd.add_argument("--profile", default="", help="Build 20-field verified profile for a Kali/Linux tool")
+    kali_cmd.add_argument("--docs", default="", help="Retrieve 5-tier prioritized documentation for a tool")
+    kali_cmd.add_argument("--learn", default="", help="Learn an unfamiliar local program (known vs inferred vs tested)")
+    kali_cmd.add_argument("--troubleshoot", default="", help="Run 13-step Kali host diagnostic playbook")
+    kali_cmd.add_argument("--lesson", default="", help="Generate Kali Training lesson for a track (e.g. kali_fundamentals)")
+    kali_cmd.add_argument("--capability", default="", help="Query Capability Registry in natural language")
     worker = subparsers.add_parser("worker", help="Run optional user-level background goal/task worker")
     worker.add_argument("--once", action="store_true", help="Run one scheduled-goal check tick and exit")
     worker.add_argument("--poll-seconds", type=int, default=15, help="Polling interval in seconds (5–300)")
@@ -241,6 +250,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps({"transmissions": rows}, indent=2, default=str))
                 return 0
             print(json.dumps(runtime.hybrid_cloud.status_summary(), indent=2, default=str))
+            return 0
+        finally:
+            runtime.close()
+    if args.action == "kali":
+        runtime = DesktopRuntime()
+        try:
+            ki = runtime.kali_intel
+            if args.system:
+                print(json.dumps(ki.system_model.get_or_refresh_model(force_refresh=True), indent=2, default=str))
+                return 0
+            if args.search:
+                print(json.dumps(ki.tool_engine.search_tools_for_objective(args.search), indent=2, default=str))
+                return 0
+            if args.profile:
+                print(json.dumps(ki.tool_engine.build_tool_profile(args.profile), indent=2, default=str))
+                return 0
+            if args.docs:
+                print(json.dumps(ki.doc_engine.retrieve_prioritized_documentation(args.docs), indent=2, default=str))
+                return 0
+            if args.learn:
+                print(json.dumps(ki.program_learner.learn_unfamiliar_program(args.learn), indent=2, default=str))
+                return 0
+            if args.troubleshoot:
+                print(json.dumps(ki.troubleshooter.diagnose_13_steps(args.troubleshoot), indent=2, default=str))
+                return 0
+            if args.lesson:
+                print(json.dumps(ki.training_academy.generate_lesson(args.lesson), indent=2, default=str))
+                return 0
+            if args.capability:
+                print(json.dumps(ki.app_registry.query_capabilities(args.capability), indent=2, default=str))
+                return 0
+            print(json.dumps(ki.status_summary(), indent=2, default=str))
             return 0
         finally:
             runtime.close()

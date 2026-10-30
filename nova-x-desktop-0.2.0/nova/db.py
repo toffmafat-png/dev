@@ -830,6 +830,91 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_offline_cloud_queue_status ON offline_cloud_queue(status, created_at ASC);
+                CREATE TABLE IF NOT EXISTS kali_system_snapshots (
+                    id TEXT PRIMARY KEY,
+                    distro_id TEXT NOT NULL DEFAULT '',
+                    distro_version TEXT NOT NULL DEFAULT '',
+                    kernel_release TEXT NOT NULL DEFAULT '',
+                    architecture TEXT NOT NULL DEFAULT '',
+                    dpkg_fingerprint TEXT NOT NULL DEFAULT '',
+                    snapshot_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_kali_system_snapshots_time ON kali_system_snapshots(created_at DESC);
+                CREATE TABLE IF NOT EXISTS kali_tool_profiles (
+                    tool_key TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    command_name TEXT NOT NULL DEFAULT '',
+                    package_name TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT '',
+                    installation_status TEXT NOT NULL DEFAULT 'unavailable',
+                    executable_path TEXT NOT NULL DEFAULT '',
+                    version TEXT NOT NULL DEFAULT '',
+                    integration_method TEXT NOT NULL DEFAULT 'documented_cli',
+                    tested_compatibility INTEGER NOT NULL DEFAULT 0,
+                    profile_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_kali_tool_profiles_cat ON kali_tool_profiles(category, installation_status);
+                CREATE TABLE IF NOT EXISTS kali_knowledge_documents (
+                    doc_key TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    tool_or_topic TEXT NOT NULL DEFAULT '',
+                    priority_tier INTEGER NOT NULL DEFAULT 1,
+                    source_kind TEXT NOT NULL DEFAULT 'local_man_or_help',
+                    source_ref TEXT NOT NULL DEFAULT '',
+                    reliability TEXT NOT NULL DEFAULT 'official_verified',
+                    version_context TEXT NOT NULL DEFAULT '',
+                    license_note TEXT NOT NULL DEFAULT '',
+                    content_sha256 TEXT NOT NULL DEFAULT '',
+                    content_excerpt TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    retrieved_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_kali_knowledge_topic ON kali_knowledge_documents(tool_or_topic, priority_tier ASC);
+                CREATE TABLE IF NOT EXISTS kali_cyber_labs (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    purpose TEXT NOT NULL,
+                    runtime_kind TEXT NOT NULL DEFAULT 'isolated_local_sandbox',
+                    network_scope TEXT NOT NULL DEFAULT '127.0.0.1/32',
+                    isolated INTEGER NOT NULL DEFAULT 1,
+                    authorized_scope TEXT NOT NULL DEFAULT 'local_owned_lab',
+                    status TEXT NOT NULL DEFAULT 'stopped',
+                    resources_json TEXT NOT NULL DEFAULT '{}',
+                    snapshots_json TEXT NOT NULL DEFAULT '[]',
+                    datasets_json TEXT NOT NULL DEFAULT '[]',
+                    progress_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS kali_training_progress (
+                    topic_id TEXT PRIMARY KEY,
+                    track TEXT NOT NULL,
+                    level TEXT NOT NULL DEFAULT 'beginner',
+                    completed INTEGER NOT NULL DEFAULT 0,
+                    quiz_score REAL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    flashcards_json TEXT NOT NULL DEFAULT '[]',
+                    notes_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS kali_expertise_revisions (
+                    id TEXT PRIMARY KEY,
+                    domain TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'candidate',
+                    verified_runs INTEGER NOT NULL DEFAULT 0,
+                    failed_runs INTEGER NOT NULL DEFAULT 0,
+                    proposal_json TEXT NOT NULL DEFAULT '{}',
+                    test_result_json TEXT NOT NULL DEFAULT '{}',
+                    rollback_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_kali_expertise_domain ON kali_expertise_revisions(domain, status, updated_at DESC);
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -4059,4 +4144,390 @@ class Database:
         with self._lock, self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._unpack_offline_cloud_task(r) for r in rows]
+
+    # --- Sections 181–200: Advanced Kali Linux Intelligence, Application Mastery & Universal Integration ---
+
+    def save_kali_system_snapshot(self, item: dict[str, Any]) -> dict[str, Any]:
+        sid = str(item.get("id") or f"ksys-{uuid.uuid4().hex[:12]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO kali_system_snapshots (
+                    id, distro_id, distro_version, kernel_release, architecture,
+                    dpkg_fingerprint, snapshot_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sid,
+                    str(item.get("distro_id") or "")[:64],
+                    str(item.get("distro_version") or "")[:80],
+                    str(item.get("kernel_release") or "")[:120],
+                    str(item.get("architecture") or "")[:48],
+                    str(item.get("dpkg_fingerprint") or "")[:128],
+                    _dump(item.get("snapshot") or {}),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM kali_system_snapshots WHERE id = ?", (sid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["snapshot"] = json.loads(d.pop("snapshot_json") or "{}")
+        return d
+
+    def latest_kali_system_snapshot(self) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM kali_system_snapshots ORDER BY created_at DESC LIMIT 1").fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["snapshot"] = json.loads(d.pop("snapshot_json") or "{}")
+        return d
+
+    def upsert_kali_tool_profile(self, item: dict[str, Any]) -> dict[str, Any]:
+        tkey = str(item.get("tool_key") or item.get("name") or "").strip().lower()
+        if not tkey:
+            raise ValueError("tool_key or name is required.")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO kali_tool_profiles (
+                    tool_key, name, command_name, package_name, category,
+                    installation_status, executable_path, version,
+                    integration_method, tested_compatibility, profile_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tool_key) DO UPDATE SET
+                    name = excluded.name,
+                    command_name = excluded.command_name,
+                    package_name = excluded.package_name,
+                    category = excluded.category,
+                    installation_status = excluded.installation_status,
+                    executable_path = excluded.executable_path,
+                    version = excluded.version,
+                    integration_method = excluded.integration_method,
+                    tested_compatibility = excluded.tested_compatibility,
+                    profile_json = excluded.profile_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    tkey[:120],
+                    str(item.get("name") or tkey)[:120],
+                    str(item.get("command_name") or tkey)[:120],
+                    str(item.get("package_name") or "")[:120],
+                    str(item.get("category") or "general")[:80],
+                    str(item.get("installation_status") or "unavailable")[:40],
+                    str(item.get("executable_path") or "")[:300],
+                    str(item.get("version") or "")[:120],
+                    str(item.get("integration_method") or "documented_cli")[:64],
+                    1 if item.get("tested_compatibility") else 0,
+                    _dump(item.get("profile") or {}),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM kali_tool_profiles WHERE tool_key = ?", (tkey[:120],)).fetchone()
+        return self._unpack_kali_tool_profile(r) if r else {}
+
+    @staticmethod
+    def _unpack_kali_tool_profile(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["tested_compatibility"] = bool(d["tested_compatibility"])
+        d["profile"] = json.loads(d.pop("profile_json") or "{}")
+        return d
+
+    def get_kali_tool_profile(self, tool_key: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM kali_tool_profiles WHERE tool_key = ?", (tool_key.strip().lower(),)).fetchone()
+        return self._unpack_kali_tool_profile(r) if r else None
+
+    def list_kali_tool_profiles(self, *, category: str = "", status: str = "", limit: int = 300) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if category:
+            clauses.append("LOWER(category) = ?")
+            params.append(category.strip().lower())
+        if status:
+            clauses.append("installation_status = ?")
+            params.append(status.strip())
+        sql = "SELECT * FROM kali_tool_profiles"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY tool_key ASC LIMIT ?"
+        params.append(max(1, min(int(limit), 1000)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._unpack_kali_tool_profile(r) for r in rows]
+
+    def upsert_kali_knowledge_doc(self, item: dict[str, Any]) -> dict[str, Any]:
+        dkey = str(item.get("doc_key") or f"kdoc-{uuid.uuid4().hex[:12]}").strip()
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            existing = conn.execute(
+                "SELECT content_sha256, retrieved_at FROM kali_knowledge_documents WHERE doc_key = ?",
+                (dkey,),
+            ).fetchone()
+            new_sha = str(item.get("content_sha256") or "")[:128]
+            unchanged = bool(existing and new_sha and existing["content_sha256"] == new_sha)
+            retrieved_at = str(existing["retrieved_at"]) if unchanged and existing else str(item.get("retrieved_at") or now)
+            conn.execute(
+                """
+                INSERT INTO kali_knowledge_documents (
+                    doc_key, title, tool_or_topic, priority_tier, source_kind,
+                    source_ref, reliability, version_context, license_note,
+                    content_sha256, content_excerpt, metadata_json, retrieved_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(doc_key) DO UPDATE SET
+                    title = excluded.title,
+                    tool_or_topic = excluded.tool_or_topic,
+                    priority_tier = excluded.priority_tier,
+                    source_kind = excluded.source_kind,
+                    source_ref = excluded.source_ref,
+                    reliability = excluded.reliability,
+                    version_context = excluded.version_context,
+                    license_note = excluded.license_note,
+                    content_sha256 = excluded.content_sha256,
+                    content_excerpt = excluded.content_excerpt,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    dkey[:160],
+                    str(item.get("title") or dkey)[:200],
+                    str(item.get("tool_or_topic") or "").lower()[:120],
+                    max(1, min(int(item.get("priority_tier") or 1), 5)),
+                    str(item.get("source_kind") or "local_man_or_help")[:80],
+                    str(item.get("source_ref") or "")[:400],
+                    str(item.get("reliability") or "official_verified")[:64],
+                    str(item.get("version_context") or "")[:160],
+                    str(item.get("license_note") or "")[:240],
+                    new_sha,
+                    str(item.get("content_excerpt") or "")[:12000],
+                    _dump(item.get("metadata") or {}),
+                    retrieved_at,
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM kali_knowledge_documents WHERE doc_key = ?", (dkey[:160],)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["metadata"] = json.loads(d.pop("metadata_json") or "{}")
+        d["incremental_unchanged"] = unchanged
+        return d
+
+    def search_kali_knowledge_docs(
+        self,
+        *,
+        query: str = "",
+        tool_or_topic: str = "",
+        max_priority_tier: int = 5,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        clauses = ["priority_tier <= ?"]
+        params: list[Any] = [max(1, min(int(max_priority_tier), 5))]
+        if tool_or_topic:
+            clauses.append("LOWER(tool_or_topic) = ?")
+            params.append(tool_or_topic.strip().lower())
+        if query:
+            q = f"%{query.strip().lower()}%"
+            clauses.append("(LOWER(title) LIKE ? OR LOWER(tool_or_topic) LIKE ? OR LOWER(content_excerpt) LIKE ?)")
+            params.extend([q, q, q])
+        sql = f"SELECT * FROM kali_knowledge_documents WHERE {' AND '.join(clauses)} ORDER BY priority_tier ASC, updated_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["metadata"] = json.loads(d.pop("metadata_json") or "{}")
+            out.append(d)
+        return out
+
+    def upsert_kali_cyber_lab(self, item: dict[str, Any]) -> dict[str, Any]:
+        lid = str(item.get("id") or f"klab-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO kali_cyber_labs (
+                    id, name, purpose, runtime_kind, network_scope, isolated,
+                    authorized_scope, status, resources_json, snapshots_json,
+                    datasets_json, progress_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    purpose = excluded.purpose,
+                    runtime_kind = excluded.runtime_kind,
+                    network_scope = excluded.network_scope,
+                    isolated = excluded.isolated,
+                    authorized_scope = excluded.authorized_scope,
+                    status = excluded.status,
+                    resources_json = excluded.resources_json,
+                    snapshots_json = excluded.snapshots_json,
+                    datasets_json = excluded.datasets_json,
+                    progress_json = excluded.progress_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    lid[:80],
+                    str(item.get("name") or lid)[:160],
+                    str(item.get("purpose") or "")[:500],
+                    str(item.get("runtime_kind") or "isolated_local_sandbox")[:80],
+                    str(item.get("network_scope") or "127.0.0.1/32")[:80],
+                    1 if item.get("isolated", True) else 0,
+                    str(item.get("authorized_scope") or "local_owned_lab")[:120],
+                    str(item.get("status") or "stopped")[:40],
+                    _dump(item.get("resources") or {}),
+                    _dump(item.get("snapshots") or []),
+                    _dump(item.get("datasets") or []),
+                    _dump(item.get("progress") or {}),
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM kali_cyber_labs WHERE id = ?", (lid[:80],)).fetchone()
+        return self._unpack_kali_cyber_lab(r) if r else {}
+
+    @staticmethod
+    def _unpack_kali_cyber_lab(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["isolated"] = bool(d["isolated"])
+        d["resources"] = json.loads(d.pop("resources_json") or "{}")
+        d["snapshots"] = json.loads(d.pop("snapshots_json") or "[]")
+        d["datasets"] = json.loads(d.pop("datasets_json") or "[]")
+        d["progress"] = json.loads(d.pop("progress_json") or "{}")
+        return d
+
+    def get_kali_cyber_lab(self, lab_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM kali_cyber_labs WHERE id = ?", (lab_id,)).fetchone()
+        return self._unpack_kali_cyber_lab(r) if r else None
+
+    def list_kali_cyber_labs(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM kali_cyber_labs ORDER BY updated_at DESC").fetchall()
+        return [self._unpack_kali_cyber_lab(r) for r in rows]
+
+    def upsert_kali_training_progress(self, item: dict[str, Any]) -> dict[str, Any]:
+        tid = str(item.get("topic_id") or "").strip().lower()
+        if not tid:
+            raise ValueError("topic_id is required.")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO kali_training_progress (
+                    topic_id, track, level, completed, quiz_score,
+                    attempts, flashcards_json, notes_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(topic_id) DO UPDATE SET
+                    track = excluded.track,
+                    level = excluded.level,
+                    completed = excluded.completed,
+                    quiz_score = excluded.quiz_score,
+                    attempts = excluded.attempts,
+                    flashcards_json = excluded.flashcards_json,
+                    notes_json = excluded.notes_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    tid[:120],
+                    str(item.get("track") or "fundamentals")[:80],
+                    str(item.get("level") or "beginner")[:32],
+                    1 if item.get("completed") else 0,
+                    float(item["quiz_score"]) if item.get("quiz_score") is not None else None,
+                    max(0, int(item.get("attempts") or 0)),
+                    _dump(item.get("flashcards") or []),
+                    _dump(item.get("notes") or {}),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM kali_training_progress WHERE topic_id = ?", (tid[:120],)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["completed"] = bool(d["completed"])
+        d["flashcards"] = json.loads(d.pop("flashcards_json") or "[]")
+        d["notes"] = json.loads(d.pop("notes_json") or "{}")
+        return d
+
+    def list_kali_training_progress(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM kali_training_progress ORDER BY updated_at DESC").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["completed"] = bool(d["completed"])
+            d["flashcards"] = json.loads(d.pop("flashcards_json") or "[]")
+            d["notes"] = json.loads(d.pop("notes_json") or "{}")
+            out.append(d)
+        return out
+
+    def upsert_kali_expertise_revision(self, item: dict[str, Any]) -> dict[str, Any]:
+        rid = str(item.get("id") or f"kexp-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO kali_expertise_revisions (
+                    id, domain, subject, version, status, verified_runs,
+                    failed_runs, proposal_json, test_result_json, rollback_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    domain = excluded.domain,
+                    subject = excluded.subject,
+                    version = excluded.version,
+                    status = excluded.status,
+                    verified_runs = excluded.verified_runs,
+                    failed_runs = excluded.failed_runs,
+                    proposal_json = excluded.proposal_json,
+                    test_result_json = excluded.test_result_json,
+                    rollback_json = excluded.rollback_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    rid[:80],
+                    str(item.get("domain") or "tool_selection")[:80],
+                    str(item.get("subject") or "")[:200],
+                    max(1, int(item.get("version") or 1)),
+                    str(item.get("status") or "candidate")[:40],
+                    max(0, int(item.get("verified_runs") or 0)),
+                    max(0, int(item.get("failed_runs") or 0)),
+                    _dump(item.get("proposal") or {}),
+                    _dump(item.get("test_result") or {}),
+                    _dump(item.get("rollback") or {}),
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM kali_expertise_revisions WHERE id = ?", (rid[:80],)).fetchone()
+        return self._unpack_kali_expertise_revision(r) if r else {}
+
+    @staticmethod
+    def _unpack_kali_expertise_revision(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["proposal"] = json.loads(d.pop("proposal_json") or "{}")
+        d["test_result"] = json.loads(d.pop("test_result_json") or "{}")
+        d["rollback"] = json.loads(d.pop("rollback_json") or "{}")
+        return d
+
+    def get_kali_expertise_revision(self, revision_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM kali_expertise_revisions WHERE id = ?", (revision_id,)).fetchone()
+        return self._unpack_kali_expertise_revision(r) if r else None
+
+    def list_kali_expertise_revisions(self, *, domain: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM kali_expertise_revisions"
+        params: list[Any] = []
+        if domain:
+            sql += " WHERE domain = ?"
+            params.append(domain.strip())
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._unpack_kali_expertise_revision(r) for r in rows]
+
 
