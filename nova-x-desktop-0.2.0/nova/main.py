@@ -815,6 +815,69 @@ class PersonalCyberLabApiRequest(BaseModel):
     targets: list[str] = Field(min_length=1, max_length=50)
 
 
+def _cyber_intelligence_health(app_state: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "sections": "261-275",
+        "scientific_security_engineering": True,
+        "mere_hacking_tool_runner": False,
+        "unknown_investigations_count": 0,
+        "vuln_lab_cases_count": 0,
+        "invented_tools_count": 0,
+        "completed_missions_count": 0,
+        "degraded": True,
+        "detail": "/api/cyber-intel/status",
+    }
+    try:
+        platform_svc = getattr(app_state, "platform", None) or getattr(getattr(app_state, "engine", None), "platform", None)
+        ci = getattr(platform_svc, "cyber_intelligence", None) if platform_svc is not None else None
+        if ci is None:
+            return base
+        s = ci.status_summary()
+        base.update(s)
+        base["degraded"] = False
+    except Exception:
+        base["degraded"] = True
+    return base
+
+
+class CyberIntelInvestigateApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    problem_statement: str = Field(min_length=3, max_length=1000)
+    domain_kind: str = Field(default="unfamiliar_protocol", max_length=80)
+    artifact_text: str = Field(default="", max_length=32_000)
+
+
+class CyberIntelVulnLabApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_component: str = Field(min_length=2, max_length=200)
+    source_text: str = Field(min_length=1, max_length=32_000)
+    patched_text: str = Field(default="", max_length=32_000)
+
+
+class CyberIntelInventToolApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=2, max_length=120)
+    category: str = Field(default="configuration_auditor", max_length=80)
+    capability_gap: str = Field(min_length=4, max_length=500)
+
+
+class CyberIntelMissionApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    objective: str = Field(min_length=4, max_length=800)
+    targets: list[dict[str, Any]] = Field(min_length=1, max_length=20)
+
+
+class CyberIntelBenchmarkApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    split: str = Field(default="default", max_length=24)
+    save_as_baseline: bool = False
+
+
+class CyberIntelFrontierIngestApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    updates: list[dict[str, Any]] = Field(min_length=1, max_length=50)
+
+
 class GICognitiveCycleApiRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     objective: str = Field(min_length=3, max_length=500)
@@ -1271,6 +1334,7 @@ def create_app(
             "acquisition_migration": _acquisition_migration_health(app.state),
             "general_intelligence": _general_intelligence_health(app.state),
             "personal_policy": _personal_policy_health(app.state),
+            "cyber_intelligence": _cyber_intelligence_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -3146,6 +3210,74 @@ def create_app(
     @app.get("/api/personal-policy/transfers")
     async def personal_policy_transfers() -> dict[str, Any]:
         return engine.platform.personal_policy.local_privacy.inspect_external_transfers()
+
+    # --- Next-Generation Autonomous Cyber Intelligence Engine (§261–§275) ---
+    @app.get("/api/cyber-intel/status")
+    async def cyber_intel_status() -> dict[str, Any]:
+        ci = engine.platform.cyber_intelligence
+        return {
+            "status": ci.status_summary(),
+            "manifest": ci.capability_manifest(),
+        }
+
+    @app.post("/api/cyber-intel/investigate")
+    async def cyber_intel_investigate(payload: CyberIntelInvestigateApiRequest) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                engine.platform.cyber_intelligence.unknown_mastery.investigate_unknown_problem,
+                problem_statement=payload.problem_statement,
+                domain_kind=payload.domain_kind,
+                artifact_text=payload.artifact_text,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/cyber-intel/vuln-lab/analyze")
+    async def cyber_intel_vuln_lab_analyze(payload: CyberIntelVulnLabApiRequest) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.cyber_intelligence.vuln_lab.analyze_artifact_in_isolated_lab,
+            target_component=payload.target_component,
+            source_text=payload.source_text,
+            patched_text=payload.patched_text,
+        )
+
+    @app.post("/api/cyber-intel/invent-tool")
+    async def cyber_intel_invent_tool(payload: CyberIntelInventToolApiRequest) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                engine.platform.cyber_intelligence.tool_inventor.invent_security_tool,
+                name=payload.name,
+                category=payload.category,
+                capability_gap=payload.capability_gap,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/cyber-intel/missions")
+    async def cyber_intel_run_mission(payload: CyberIntelMissionApiRequest) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.cyber_intelligence.mission_system.execute_mission,
+            objective=payload.objective,
+            targets=payload.targets,
+        )
+
+    @app.post("/api/cyber-intel/benchmark")
+    async def cyber_intel_run_benchmark(payload: CyberIntelBenchmarkApiRequest) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                engine.platform.cyber_intelligence.benchmarks.run_suite,
+                split=payload.split,
+                save_as_baseline=payload.save_as_baseline,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/cyber-intel/frontier")
+    async def cyber_intel_ingest_frontier(payload: CyberIntelFrontierIngestApiRequest) -> dict[str, Any]:
+        try:
+            return engine.platform.cyber_intelligence.knowledge_frontier.ingest_frontier_updates(payload.updates)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return app
 

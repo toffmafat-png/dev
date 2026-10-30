@@ -76,6 +76,12 @@ def _parser() -> argparse.ArgumentParser:
     pp_cmd.add_argument("--grant-programs", default="*", help="Comma-separated allowed programs for --grant-scope (default: *)")
     pp_cmd.add_argument("--register-lab", default="", help="Register an owned/authorized personal cyber lab target with persistent authorization")
     pp_cmd.add_argument("--transfers", action="store_true", help="Inspect visible external frontier AI provider data transfers")
+    ci_cmd = subparsers.add_parser("cyber-intel", help="Next-Generation Autonomous Cyber Intelligence Engine (§261–§275)")
+    ci_cmd.add_argument("--manifest", action="store_true", help="Print §261–§275 capability & scientific posture manifest")
+    ci_cmd.add_argument("--investigate", default="", help="Run §261 15-step unknown-problem scientific investigation")
+    ci_cmd.add_argument("--invent-tool", default="", help="Run §265 12-step security utility invention by name")
+    ci_cmd.add_argument("--benchmark", action="store_true", help="Run §272 12-metric cybersecurity benchmark suite (default split)")
+    ci_cmd.add_argument("--held-out", action="store_true", help="Run §272 held-out cybersecurity benchmark split")
     worker = subparsers.add_parser("worker", help="Run optional user-level background goal/task worker")
     worker.add_argument("--once", action="store_true", help="Run one scheduled-goal check tick and exit")
     worker.add_argument("--poll-seconds", type=int, default=15, help="Polling interval in seconds (5–300)")
@@ -452,6 +458,42 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(pp.local_privacy.inspect_external_transfers(), indent=2, default=str))
                 return 0
             print(json.dumps(pp.status_summary(), indent=2, default=str))
+            return 0
+        finally:
+            runtime.close()
+    if args.action == "cyber-intel":
+        runtime = DesktopRuntime()
+        try:
+            ci = runtime.cyber_intelligence
+            if args.manifest:
+                print(json.dumps(ci.capability_manifest(), indent=2, default=str))
+                return 0
+            if args.investigate:
+                print(
+                    json.dumps(
+                        ci.unknown_mastery.investigate_unknown_problem(problem_statement=args.investigate),
+                        indent=2,
+                        default=str,
+                    )
+                )
+                return 0
+            if args.invent_tool:
+                print(
+                    json.dumps(
+                        ci.tool_inventor.invent_security_tool(
+                            name=args.invent_tool,
+                            capability_gap=f"CLI-requested custom security utility: {args.invent_tool}",
+                        ),
+                        indent=2,
+                        default=str,
+                    )
+                )
+                return 0
+            if args.benchmark or args.held_out:
+                split = "held_out" if args.held_out else "default"
+                print(json.dumps(ci.benchmarks.run_suite(split=split, save_as_baseline=False), indent=2, default=str))
+                return 0
+            print(json.dumps(ci.status_summary(), indent=2, default=str))
             return 0
         finally:
             runtime.close()

@@ -18,6 +18,7 @@ Contents:
   docs/INTEGRATIONS.md
   docs/KALI_INTELLIGENCE_LAYER.md
   docs/NATIVE_DESKTOP.md
+  docs/NEXT_GEN_CYBER_INTELLIGENCE.md
   docs/PERSONAL_USE_SECURITY_POLICY.md
   docs/PLATFORM_ARCHITECTURE.md
   docs/PRIVACY_INTEL.md
@@ -67,6 +68,13 @@ Contents:
   nova/cyber_division/research_forensics_wireless.py
   nova/cyber_division/scope_and_surface.py
   nova/cyber_division/service.py
+  nova/cyber_intelligence/__init__.py
+  nova/cyber_intelligence/acceptance.py
+  nova/cyber_intelligence/benchmarking_improvement_frontier.py
+  nova/cyber_intelligence/invention_multimodel_memory.py
+  nova/cyber_intelligence/missions_labs_decisions.py
+  nova/cyber_intelligence/service.py
+  nova/cyber_intelligence/unknown_and_vuln_lab.py
   nova/data_workspace.py
   nova/db.py
   nova/desktop/__init__.py
@@ -146,6 +154,7 @@ Contents:
   nova/tools/calculator.py
   nova/tools/creation.py
   nova/tools/cyber_division.py
+  nova/tools/cyber_intelligence.py
   nova/tools/general_intelligence.py
   nova/tools/kali_intel.py
   nova/tools/personal_policy.py
@@ -194,6 +203,7 @@ Contents:
   tests/test_intelligence.py
   tests/test_kali_intelligence.py
   tests/test_model_providers.py
+  tests/test_next_gen_cyber_intelligence.py
   tests/test_personal_use_policy.py
   tests/test_platform_stack.py
   tests/test_privacy_intel_module.py
@@ -270,6 +280,11 @@ Notes:
     docs/PERSONAL_USE_SECURITY_POLICY.md and verified by
     `python -m nova.personal_policy.acceptance` (16 acceptance checks) and
     tests/test_personal_use_policy.py.
+  * The §261–§275 Next-Generation Autonomous Cyber Intelligence Engine lives in
+    nova/cyber_intelligence/ and nova/tools/cyber_intelligence.py, documented in
+    docs/NEXT_GEN_CYBER_INTELLIGENCE.md and verified by
+    `python -m nova.cyber_intelligence.acceptance` (20 acceptance checks) and
+    tests/test_next_gen_cyber_intelligence.py.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).

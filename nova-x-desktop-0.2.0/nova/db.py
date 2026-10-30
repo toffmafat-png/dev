@@ -1252,6 +1252,99 @@ class Database:
                     allowed INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS cyber_intel_unknown_investigations (
+                    investigation_id TEXT PRIMARY KEY,
+                    problem_statement TEXT NOT NULL,
+                    domain_kind TEXT NOT NULL DEFAULT 'unfamiliar_system',
+                    status TEXT NOT NULL DEFAULT 'completed',
+                    steps_json TEXT NOT NULL DEFAULT '[]',
+                    hypotheses_json TEXT NOT NULL DEFAULT '[]',
+                    rejected_approaches_json TEXT NOT NULL DEFAULT '[]',
+                    solution_or_barrier_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cyber_intel_vuln_lab_cases (
+                    case_id TEXT PRIMARY KEY,
+                    category TEXT NOT NULL,
+                    target_component TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'analyzed',
+                    root_cause TEXT NOT NULL DEFAULT '',
+                    reproducible INTEGER NOT NULL DEFAULT 0,
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cyber_intel_invented_tools (
+                    tool_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    capability_gap TEXT NOT NULL,
+                    source_path TEXT NOT NULL DEFAULT '',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    pipeline_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cyber_intel_generalized_procedures (
+                    procedure_id TEXT PRIMARY KEY,
+                    family TEXT NOT NULL,
+                    source_env TEXT NOT NULL,
+                    target_env TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    delta_json TEXT NOT NULL DEFAULT '{}',
+                    steps_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cyber_intel_research_memory (
+                    record_id TEXT PRIMARY KEY,
+                    record_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    source_provenance TEXT NOT NULL,
+                    software_version TEXT NOT NULL DEFAULT '',
+                    verification_status TEXT NOT NULL DEFAULT 'theoretical_unconfirmed',
+                    evidence_json TEXT NOT NULL DEFAULT '{}',
+                    retrieved_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cyber_intel_memory_relations (
+                    relation_id TEXT PRIMARY KEY,
+                    from_record_id TEXT NOT NULL,
+                    relation_type TEXT NOT NULL,
+                    to_record_id TEXT NOT NULL,
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cyber_intel_missions (
+                    mission_id TEXT PRIMARY KEY,
+                    objective TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'completed',
+                    stages_json TEXT NOT NULL DEFAULT '[]',
+                    subtasks_json TEXT NOT NULL DEFAULT '[]',
+                    isolated_subtasks_json TEXT NOT NULL DEFAULT '[]',
+                    report_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cyber_intel_benchmark_runs (
+                    run_id TEXT PRIMARY KEY,
+                    suite_version TEXT NOT NULL,
+                    split TEXT NOT NULL DEFAULT 'default',
+                    is_baseline INTEGER NOT NULL DEFAULT 0,
+                    metrics_json TEXT NOT NULL DEFAULT '{}',
+                    comparison_json TEXT NOT NULL DEFAULT '{}',
+                    cases_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cyber_intel_knowledge_frontier (
+                    item_id TEXT PRIMARY KEY,
+                    category TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    source_url TEXT NOT NULL DEFAULT '',
+                    affected_packages_json TEXT NOT NULL DEFAULT '[]',
+                    relevance_score REAL NOT NULL DEFAULT 0.0,
+                    summary TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -6500,6 +6593,451 @@ class Database:
             d = dict(r)
             d["credentials_stripped"] = bool(d["credentials_stripped"])
             d["allowed"] = bool(d["allowed"])
+            out.append(d)
+        return out
+
+    # ------------------------------------------------------------------
+    # §261–§275 Next-Generation Autonomous Cyber Intelligence Engine
+    # ------------------------------------------------------------------
+
+    def save_cyber_intel_investigation(self, item: dict[str, Any]) -> dict[str, Any]:
+        iid = str(item.get("investigation_id") or f"cinv-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO cyber_intel_unknown_investigations (
+                    investigation_id, problem_statement, domain_kind, status,
+                    steps_json, hypotheses_json, rejected_approaches_json, solution_or_barrier_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    iid,
+                    str(item.get("problem_statement") or "")[:1000],
+                    str(item.get("domain_kind") or "unfamiliar_system")[:80],
+                    str(item.get("status") or "completed")[:40],
+                    json.dumps(item.get("steps") or []),
+                    json.dumps(item.get("hypotheses") or []),
+                    json.dumps(item.get("rejected_approaches") or []),
+                    json.dumps(item.get("solution_or_barrier") or {}),
+                    now,
+                ),
+            )
+            r = conn.execute(
+                "SELECT * FROM cyber_intel_unknown_investigations WHERE investigation_id = ?",
+                (iid,),
+            ).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["steps"] = json.loads(d.pop("steps_json") or "[]")
+        d["hypotheses"] = json.loads(d.pop("hypotheses_json") or "[]")
+        d["rejected_approaches"] = json.loads(d.pop("rejected_approaches_json") or "[]")
+        d["solution_or_barrier"] = json.loads(d.pop("solution_or_barrier_json") or "{}")
+        return d
+
+    def list_cyber_intel_investigations(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM cyber_intel_unknown_investigations ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["steps"] = json.loads(d.pop("steps_json") or "[]")
+            d["hypotheses"] = json.loads(d.pop("hypotheses_json") or "[]")
+            d["rejected_approaches"] = json.loads(d.pop("rejected_approaches_json") or "[]")
+            d["solution_or_barrier"] = json.loads(d.pop("solution_or_barrier_json") or "{}")
+            out.append(d)
+        return out
+
+    def save_cyber_intel_vuln_case(self, item: dict[str, Any]) -> dict[str, Any]:
+        cid = str(item.get("case_id") or f"cvlab-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO cyber_intel_vuln_lab_cases (
+                    case_id, category, target_component, status, root_cause, reproducible, details_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cid,
+                    str(item.get("category") or "undocumented_software_weaknesses")[:80],
+                    str(item.get("target_component") or "unknown")[:200],
+                    str(item.get("status") or "analyzed")[:40],
+                    str(item.get("root_cause") or "")[:1000],
+                    1 if item.get("reproducible") else 0,
+                    json.dumps(item.get("details") or {}),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_intel_vuln_lab_cases WHERE case_id = ?", (cid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["reproducible"] = bool(d["reproducible"])
+        d["details"] = json.loads(d.pop("details_json") or "{}")
+        return d
+
+    def list_cyber_intel_vuln_cases(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM cyber_intel_vuln_lab_cases ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["reproducible"] = bool(d["reproducible"])
+            d["details"] = json.loads(d.pop("details_json") or "{}")
+            out.append(d)
+        return out
+
+    def upsert_cyber_intel_invented_tool(self, item: dict[str, Any]) -> dict[str, Any]:
+        tid = str(item.get("tool_id") or f"citool-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            existing = conn.execute(
+                "SELECT created_at, version FROM cyber_intel_invented_tools WHERE tool_id = ?",
+                (tid,),
+            ).fetchone()
+            created_at = str(existing["created_at"]) if existing else now
+            ver = int(item.get("version") or ((int(existing["version"]) + 1) if existing else 1))
+            conn.execute(
+                """
+                INSERT INTO cyber_intel_invented_tools (
+                    tool_id, name, category, version, capability_gap, source_path, active, pipeline_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tool_id) DO UPDATE SET
+                    name = excluded.name,
+                    category = excluded.category,
+                    version = excluded.version,
+                    capability_gap = excluded.capability_gap,
+                    source_path = excluded.source_path,
+                    active = excluded.active,
+                    pipeline_json = excluded.pipeline_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    tid,
+                    str(item.get("name") or tid)[:120],
+                    str(item.get("category") or "defensive_scanner")[:80],
+                    ver,
+                    str(item.get("capability_gap") or "")[:500],
+                    str(item.get("source_path") or "")[:400],
+                    1 if item.get("active", True) else 0,
+                    json.dumps(item.get("pipeline") or {}),
+                    created_at,
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_intel_invented_tools WHERE tool_id = ?", (tid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["active"] = bool(d["active"])
+        d["pipeline"] = json.loads(d.pop("pipeline_json") or "{}")
+        return d
+
+    def list_cyber_intel_invented_tools(self, *, active_only: bool = False) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM cyber_intel_invented_tools" + (" WHERE active = 1" if active_only else "") + " ORDER BY updated_at DESC"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["active"] = bool(d["active"])
+            d["pipeline"] = json.loads(d.pop("pipeline_json") or "{}")
+            out.append(d)
+        return out
+
+    def save_cyber_intel_procedure(self, item: dict[str, Any]) -> dict[str, Any]:
+        pid = str(item.get("procedure_id") or f"cproc-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            existing = conn.execute(
+                "SELECT version FROM cyber_intel_generalized_procedures WHERE procedure_id = ?",
+                (pid,),
+            ).fetchone()
+            ver = int(item.get("version") or ((int(existing["version"]) + 1) if existing else 1))
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO cyber_intel_generalized_procedures (
+                    procedure_id, family, source_env, target_env, version, delta_json, steps_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pid,
+                    str(item.get("family") or "linux_security_transfer")[:80],
+                    str(item.get("source_env") or "")[:120],
+                    str(item.get("target_env") or "")[:120],
+                    ver,
+                    json.dumps(item.get("delta") or {}),
+                    json.dumps(item.get("steps") or []),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_intel_generalized_procedures WHERE procedure_id = ?", (pid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["delta"] = json.loads(d.pop("delta_json") or "{}")
+        d["steps"] = json.loads(d.pop("steps_json") or "[]")
+        return d
+
+    def list_cyber_intel_procedures(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM cyber_intel_generalized_procedures ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["delta"] = json.loads(d.pop("delta_json") or "{}")
+            d["steps"] = json.loads(d.pop("steps_json") or "[]")
+            out.append(d)
+        return out
+
+    def save_cyber_intel_memory_record(self, item: dict[str, Any]) -> dict[str, Any]:
+        rid = str(item.get("record_id") or f"cmem-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO cyber_intel_research_memory (
+                    record_id, record_type, title, content, source_provenance,
+                    software_version, verification_status, evidence_json, retrieved_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rid,
+                    str(item.get("record_type") or "technical_research")[:60],
+                    str(item.get("title") or "")[:240],
+                    str(item.get("content") or "")[:8000],
+                    str(item.get("source_provenance") or "local_investigation")[:300],
+                    str(item.get("software_version") or "")[:80],
+                    str(item.get("verification_status") or "theoretical_unconfirmed")[:60],
+                    json.dumps(item.get("evidence") or {}),
+                    str(item.get("retrieved_at") or now)[:60],
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_intel_research_memory WHERE record_id = ?", (rid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["evidence"] = json.loads(d.pop("evidence_json") or "{}")
+        return d
+
+    def list_cyber_intel_memory_records(self, *, record_type: str = "", query: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if record_type:
+            clauses.append("record_type = ?")
+            params.append(record_type)
+        if query:
+            clauses.append("(LOWER(title) LIKE ? OR LOWER(content) LIKE ?)")
+            pat = f"%{query.lower()}%"
+            params.extend([pat, pat])
+        sql = f"SELECT * FROM cyber_intel_research_memory WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["evidence"] = json.loads(d.pop("evidence_json") or "{}")
+            out.append(d)
+        return out
+
+    def add_cyber_intel_memory_relation(
+        self,
+        *,
+        from_record_id: str,
+        relation_type: str,
+        to_record_id: str,
+        notes: str = "",
+    ) -> dict[str, Any]:
+        rel_id = f"crel-{uuid.uuid4().hex[:10]}"
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO cyber_intel_memory_relations (
+                    relation_id, from_record_id, relation_type, to_record_id, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (rel_id, from_record_id[:80], relation_type[:60], to_record_id[:80], notes[:300], now),
+            )
+            r = conn.execute("SELECT * FROM cyber_intel_memory_relations WHERE relation_id = ?", (rel_id,)).fetchone()
+        return dict(r) if r else {}
+
+    def list_cyber_intel_memory_relations(self, record_id: str = "") -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            if record_id:
+                rows = conn.execute(
+                    "SELECT * FROM cyber_intel_memory_relations WHERE from_record_id = ? OR to_record_id = ? ORDER BY created_at DESC",
+                    (record_id, record_id),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM cyber_intel_memory_relations ORDER BY created_at DESC LIMIT 200").fetchall()
+        return [dict(r) for r in rows]
+
+    def save_cyber_intel_mission(self, item: dict[str, Any]) -> dict[str, Any]:
+        mid = str(item.get("mission_id") or f"cmis-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO cyber_intel_missions (
+                    mission_id, objective, status, stages_json, subtasks_json, isolated_subtasks_json, report_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mid,
+                    str(item.get("objective") or "")[:1000],
+                    str(item.get("status") or "completed")[:40],
+                    json.dumps(item.get("stages") or []),
+                    json.dumps(item.get("subtasks") or []),
+                    json.dumps(item.get("isolated_subtasks") or []),
+                    json.dumps(item.get("report") or {}),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_intel_missions WHERE mission_id = ?", (mid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["stages"] = json.loads(d.pop("stages_json") or "[]")
+        d["subtasks"] = json.loads(d.pop("subtasks_json") or "[]")
+        d["isolated_subtasks"] = json.loads(d.pop("isolated_subtasks_json") or "[]")
+        d["report"] = json.loads(d.pop("report_json") or "{}")
+        return d
+
+    def list_cyber_intel_missions(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM cyber_intel_missions ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["stages"] = json.loads(d.pop("stages_json") or "[]")
+            d["subtasks"] = json.loads(d.pop("subtasks_json") or "[]")
+            d["isolated_subtasks"] = json.loads(d.pop("isolated_subtasks_json") or "[]")
+            d["report"] = json.loads(d.pop("report_json") or "{}")
+            out.append(d)
+        return out
+
+    def save_cyber_intel_benchmark_run(self, item: dict[str, Any]) -> dict[str, Any]:
+        rid = str(item.get("run_id") or f"cbench-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            if item.get("is_baseline"):
+                conn.execute("UPDATE cyber_intel_benchmark_runs SET is_baseline = 0 WHERE split = 'default'")
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO cyber_intel_benchmark_runs (
+                    run_id, suite_version, split, is_baseline, metrics_json, comparison_json, cases_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rid,
+                    str(item.get("suite_version") or "nova-cyber-bench-v1")[:60],
+                    str(item.get("split") or "default")[:24],
+                    1 if item.get("is_baseline") else 0,
+                    json.dumps(item.get("metrics") or {}),
+                    json.dumps(item.get("comparison") or {}),
+                    json.dumps(item.get("cases") or []),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_intel_benchmark_runs WHERE run_id = ?", (rid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["is_baseline"] = bool(d["is_baseline"])
+        d["metrics"] = json.loads(d.pop("metrics_json") or "{}")
+        d["comparison"] = json.loads(d.pop("comparison_json") or "{}")
+        d["cases"] = json.loads(d.pop("cases_json") or "[]")
+        return d
+
+    def get_cyber_intel_baseline_run(self) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute(
+                "SELECT * FROM cyber_intel_benchmark_runs WHERE is_baseline = 1 AND split = 'default' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["is_baseline"] = bool(d["is_baseline"])
+        d["metrics"] = json.loads(d.pop("metrics_json") or "{}")
+        d["comparison"] = json.loads(d.pop("comparison_json") or "{}")
+        d["cases"] = json.loads(d.pop("cases_json") or "[]")
+        return d
+
+    def list_cyber_intel_benchmark_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM cyber_intel_benchmark_runs ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 100)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["is_baseline"] = bool(d["is_baseline"])
+            d["metrics"] = json.loads(d.pop("metrics_json") or "{}")
+            d["comparison"] = json.loads(d.pop("comparison_json") or "{}")
+            d["cases"] = json.loads(d.pop("cases_json") or "[]")
+            out.append(d)
+        return out
+
+    def upsert_cyber_intel_frontier_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        fid = str(item.get("item_id") or f"cfront-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO cyber_intel_knowledge_frontier (
+                    item_id, category, title, source_url, affected_packages_json, relevance_score, summary, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    fid,
+                    str(item.get("category") or "new_vulnerabilities")[:80],
+                    str(item.get("title") or "")[:240],
+                    str(item.get("source_url") or "")[:300],
+                    json.dumps(item.get("affected_packages") or []),
+                    float(item.get("relevance_score") or 0.0),
+                    str(item.get("summary") or "")[:2000],
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM cyber_intel_knowledge_frontier WHERE item_id = ?", (fid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["affected_packages"] = json.loads(d.pop("affected_packages_json") or "[]")
+        return d
+
+    def list_cyber_intel_frontier_items(self, *, category: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        sql = f"SELECT * FROM cyber_intel_knowledge_frontier WHERE {' AND '.join(clauses)} ORDER BY relevance_score DESC, updated_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 300)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["affected_packages"] = json.loads(d.pop("affected_packages_json") or "[]")
             out.append(d)
         return out
 

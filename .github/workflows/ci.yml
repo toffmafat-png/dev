@@ -118,6 +118,9 @@ jobs:
       - name: Personal-Use Security & Autonomy Policy Acceptance (Sections 1-7)
         run: python -m nova.personal_policy.acceptance
 
+      - name: Next-Generation Autonomous Cyber Intelligence Acceptance (§261-§275)
+        run: python -m nova.cyber_intelligence.acceptance
+
       - name: Pytest (full suite)
         run: python -m pytest -q
 
