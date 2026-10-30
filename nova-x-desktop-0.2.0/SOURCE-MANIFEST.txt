@@ -14,6 +14,7 @@ Contents:
   docs/CYBERSECURITY_DIVISION.md
   docs/EXTENSION_SDK.md
   docs/FEATURE_MATRIX.md
+  docs/GENERAL_INTELLIGENCE_ARCHITECTURE.md
   docs/INTEGRATIONS.md
   docs/KALI_INTELLIGENCE_LAYER.md
   docs/NATIVE_DESKTOP.md
@@ -78,6 +79,14 @@ Contents:
   nova/devtools.py
   nova/engine.py
   nova/events.py
+  nova/general_intelligence/__init__.py
+  nova/general_intelligence/acceptance.py
+  nova/general_intelligence/cognitive_and_memory.py
+  nova/general_intelligence/collective_durable_distributed.py
+  nova/general_intelligence/evolution_reliability_governance.py
+  nova/general_intelligence/learning_research_multimodal.py
+  nova/general_intelligence/reasoning_metacog_planning.py
+  nova/general_intelligence/service.py
   nova/governance.py
   nova/hybrid_cloud/__init__.py
   nova/hybrid_cloud/acceptance.py
@@ -132,6 +141,7 @@ Contents:
   nova/tools/calculator.py
   nova/tools/creation.py
   nova/tools/cyber_division.py
+  nova/tools/general_intelligence.py
   nova/tools/kali_intel.py
   nova/tools/privacy_intel.py
   nova/tools/registry.py
@@ -172,6 +182,7 @@ Contents:
   tests/test_desktop.py
   tests/test_desktop_ui.py
   tests/test_engine.py
+  tests/test_general_intelligence_expansion.py
   tests/test_goals.py
   tests/test_integration_matrix.py
   tests/test_intelligence.py
@@ -241,6 +252,12 @@ Notes:
     docs/ACQUISITION_AND_MIGRATION.md and verified by
     `python -m nova.acquisition_migration.acceptance` (20 acceptance checks) and
     tests/test_acquisition_migration.py.
+  * The §236–§260 General Intelligence, Cognitive Architecture, and Unlimited
+    Capability Expansion layer lives in nova/general_intelligence/ and
+    nova/tools/general_intelligence.py, documented in
+    docs/GENERAL_INTELLIGENCE_ARCHITECTURE.md and verified by
+    `python -m nova.general_intelligence.acceptance` (20 unseen acceptance tasks)
+    and tests/test_general_intelligence_expansion.py.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).

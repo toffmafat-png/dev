@@ -24,6 +24,7 @@ from nova.db import Database
 from nova.desktop_control import LinuxDesktopController, build_desktop_control_tools
 from nova.devtools import DeveloperWorkspace
 from nova.events import Event, EventBus
+from nova.general_intelligence.service import GeneralIntelligenceService
 from nova.governance import PrivacyGovernor, SystemHealthCenter
 from nova.hybrid_cloud.service import HybridCloudIntelligenceService, register_hybrid_cloud_tools
 from nova.intelligence import IntelligenceOrchestrator, ModelManager
@@ -48,6 +49,7 @@ from nova.terminal import TerminalWorkspace
 from nova.tools.acquisition_migration import build_acquisition_migration_tools
 from nova.tools.creation import build_creation_tools
 from nova.tools.cyber_division import build_cyber_division_tools
+from nova.tools.general_intelligence import build_general_intelligence_tools
 from nova.tools.kali_intel import build_kali_intel_tools
 from nova.tools.privacy_intel import build_privacy_intel_tools
 from nova.tools.registry import ToolRegistry
@@ -105,6 +107,10 @@ class PlatformService:
     system_access: SystemAccessService = field(init=False)
     privacy_intel: PrivacyIntelligenceService = field(init=False)
     hybrid_cloud: HybridCloudIntelligenceService = field(init=False)
+    kali_intel: KaliIntelligenceService = field(init=False)
+    cyber_division: CybersecurityEngineeringDivision = field(init=False)
+    acquisition_migration: AutonomousAcquisitionAndMigrationService = field(init=False)
+    general_intelligence: GeneralIntelligenceService = field(init=False)
 
     def __post_init__(self) -> None:
         data_dir = Path(self.settings.data_dir)
@@ -340,6 +346,22 @@ class PlatformService:
         for am_tool in build_acquisition_migration_tools(lambda: self.acquisition_migration):
             if self.tools.get(am_tool.name) is None:
                 self.tools.register(am_tool)
+        self.general_intelligence = GeneralIntelligenceService(
+            db=self.db,
+            workspace_dir=workspace_dir,
+            data_dir=data_dir,
+            knowledge=self.knowledge,
+            redactor=self.redactor,
+            capabilities=self.capabilities,
+            tool_registry=self.tools,
+            improvement_engine=self.improvement,
+            acquisition_service=self.acquisition_migration,
+            cyber_division=self.cyber_division,
+            creation_engine=self.creation,
+        )
+        for gi_tool in build_general_intelligence_tools(lambda: self.general_intelligence):
+            if self.tools.get(gi_tool.name) is None:
+                self.tools.register(gi_tool)
 
     def _register_baseline_integrations(self) -> None:
         self.gateway.register(

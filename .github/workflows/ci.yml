@@ -112,6 +112,9 @@ jobs:
       - name: Final Autonomous Acquisition & Migration Acceptance (§235)
         run: python -m nova.acquisition_migration.acceptance
 
+      - name: Final General Intelligence Acceptance (§260)
+        run: python -m nova.general_intelligence.acceptance
+
       - name: Pytest (full suite)
         run: python -m pytest -q
 
