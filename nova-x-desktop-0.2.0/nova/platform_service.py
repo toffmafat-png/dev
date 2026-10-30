@@ -19,6 +19,7 @@ from nova.config import Settings
 from nova.context_manager import ContextOptimizer
 from nova.creation.engine import UniversalCreationEngine
 from nova.cyber_division.service import CybersecurityEngineeringDivision
+from nova.cyber_intelligence.service import NextGenCyberIntelligenceService
 from nova.data_workspace import DataWorkspace
 from nova.db import Database
 from nova.desktop_control import LinuxDesktopController, build_desktop_control_tools
@@ -50,6 +51,7 @@ from nova.terminal import TerminalWorkspace
 from nova.tools.acquisition_migration import build_acquisition_migration_tools
 from nova.tools.creation import build_creation_tools
 from nova.tools.cyber_division import build_cyber_division_tools
+from nova.tools.cyber_intelligence import build_cyber_intelligence_tools
 from nova.tools.general_intelligence import build_general_intelligence_tools
 from nova.tools.kali_intel import build_kali_intel_tools
 from nova.tools.personal_policy import build_personal_policy_tools
@@ -114,6 +116,7 @@ class PlatformService:
     acquisition_migration: AutonomousAcquisitionAndMigrationService = field(init=False)
     general_intelligence: GeneralIntelligenceService = field(init=False)
     personal_policy: PersonalSecurityAndAutonomyService = field(init=False)
+    cyber_intelligence: NextGenCyberIntelligenceService = field(init=False)
 
     def __post_init__(self) -> None:
         data_dir = Path(self.settings.data_dir)
@@ -375,6 +378,19 @@ class PlatformService:
         for pp_tool in build_personal_policy_tools(lambda: self.personal_policy):
             if self.tools.get(pp_tool.name) is None:
                 self.tools.register(pp_tool)
+        self.cyber_intelligence = NextGenCyberIntelligenceService(
+            db=self.db,
+            workspace_dir=workspace_dir,
+            cyber_division=self.cyber_division,
+            personal_policy=self.personal_policy,
+            kali_intel=self.kali_intel,
+            knowledge_store=self.knowledge,
+            tool_registry=self.tools,
+            resource_manager=self.resources,
+        )
+        for ci_tool in build_cyber_intelligence_tools(lambda: self.cyber_intelligence):
+            if self.tools.get(ci_tool.name) is None:
+                self.tools.register(ci_tool)
 
     def _register_baseline_integrations(self) -> None:
         self.gateway.register(
@@ -454,6 +470,7 @@ class PlatformService:
                 "onion_hosting_enabled": bool(self.privacy_intel.tor.get_config()["onion_hosting_enabled"]),
             },
             "personal_policy": self.personal_policy.status_summary(),
+            "cyber_intelligence": self.cyber_intelligence.status_summary(),
             "recommendations": [item.to_dict() for item in recommendation_catalogue()],
         }
 
