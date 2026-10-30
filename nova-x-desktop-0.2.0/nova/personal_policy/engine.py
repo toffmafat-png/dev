@@ -104,6 +104,7 @@ DEFAULT_POWER_USER_PROGRAMS: tuple[str, ...] = (
     "jq",
     "sha256sum",
     "git",
+    "python",
     "python3",
     "pytest",
     "ruff",

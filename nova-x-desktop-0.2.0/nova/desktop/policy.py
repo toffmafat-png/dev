@@ -335,7 +335,10 @@ class CommandPolicy:
             from nova.personal_policy.engine import DEFAULT_POWER_USER_PROGRAMS
 
             roots = self.roots()
-            if roots and is_within(working_dir, roots) and executable in DEFAULT_POWER_USER_PROGRAMS:
+            is_power_prog = executable in DEFAULT_POWER_USER_PROGRAMS or bool(
+                re.fullmatch(r"python3(?:\.\d+)?", executable)
+            )
+            if roots and is_within(working_dir, roots) and is_power_prog:
                 return {
                     "action": "allow",
                     "rule": "personal_power_user_profile",
