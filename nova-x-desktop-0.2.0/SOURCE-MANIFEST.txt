@@ -7,6 +7,7 @@ Contents:
   Dockerfile
   README.md
   app.py
+  docs/ACQUISITION_AND_MIGRATION.md
   docs/COGNITION.md
   docs/CORRECTED_MASTER_ARCHITECTURE.md
   docs/CREATION_ENGINE.md
@@ -26,6 +27,13 @@ Contents:
   docs/UNIFIED_OS.md
   nova/__init__.py
   nova/acceptance.py
+  nova/acquisition_migration/__init__.py
+  nova/acquisition_migration/acceptance.py
+  nova/acquisition_migration/crypto_and_archive.py
+  nova/acquisition_migration/discovery_and_provenance.py
+  nova/acquisition_migration/installer_lifecycle_env.py
+  nova/acquisition_migration/migration_and_backup.py
+  nova/acquisition_migration/service.py
   nova/autonomy.py
   nova/capabilities.py
   nova/cognition/__init__.py
@@ -120,6 +128,7 @@ Contents:
   nova/system_access/service.py
   nova/terminal.py
   nova/tools/__init__.py
+  nova/tools/acquisition_migration.py
   nova/tools/calculator.py
   nova/tools/creation.py
   nova/tools/cyber_division.py
@@ -150,6 +159,7 @@ Contents:
   static/styles.css
   tests/__init__.py
   tests/conftest.py
+  tests/test_acquisition_migration.py
   tests/test_api.py
   tests/test_autonomy.py
   tests/test_cognition.py
@@ -225,6 +235,12 @@ Notes:
     nova/tools/cyber_division.py, documented in docs/CYBERSECURITY_DIVISION.md and
     verified by `python -m nova.cyber_division.acceptance` (18 acceptance checks)
     and tests/test_cyber_division.py.
+  * The §221–§235 Autonomous Software Acquisition, Environment Management, and
+    Universal Migration Engine lives in nova/acquisition_migration/ and
+    nova/tools/acquisition_migration.py, documented in
+    docs/ACQUISITION_AND_MIGRATION.md and verified by
+    `python -m nova.acquisition_migration.acceptance` (20 acceptance checks) and
+    tests/test_acquisition_migration.py.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).

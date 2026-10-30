@@ -2024,6 +2024,7 @@ class NovaWindow(QMainWindow):
             f"Screen Studio Recordings: {len(snap['recordings'])} saved session(s) · session_type={snap['recording_session']['session_type']}",
             f"Kali Intelligence (§181–§200): profiles={self.runtime.kali_intel.status_summary()['indexed_tool_and_app_profiles']} · docs={self.runtime.kali_intel.status_summary()['indexed_knowledge_documents']} · labs={self.runtime.kali_intel.status_summary()['managed_cyber_labs']}",
             f"Cybersecurity Division (§201–§220): scopes={self.runtime.cyber_division.status_summary()['active_scopes']} · findings={self.runtime.cyber_division.status_summary()['tracked_findings']} · factory_tools={self.runtime.cyber_division.status_summary()['generated_defensive_tools']}",
+            f"Software Acquisition & Migration (§221–§235): managed_sw={self.runtime.acquisition_migration.status_summary()['managed_software_count']} · env_profiles={self.runtime.acquisition_migration.status_summary()['environment_profiles_count']} · verified_backups={self.runtime.acquisition_migration.status_summary()['verified_migration_packages_count']}",
         ]
         self.infra_ops_box.setPlainText("\n".join(ops_lines))
 

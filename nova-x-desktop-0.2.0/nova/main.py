@@ -719,6 +719,59 @@ def _cyber_division_health(app_state: Any) -> dict[str, Any]:
     return base
 
 
+def _acquisition_migration_health(app_state: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "sections": "221-235",
+        "unified_single_architecture": True,
+        "managed_software": 0,
+        "verified_packages": 0,
+        "degraded": True,
+        "detail": "/api/acquisition/status",
+    }
+    try:
+        platform_svc = getattr(app_state, "platform", None) or getattr(getattr(app_state, "engine", None), "platform", None)
+        am = getattr(platform_svc, "acquisition_migration", None) if platform_svc is not None else None
+        if am is None:
+            return base
+        s = am.status_summary()
+        base["managed_software"] = int(s["managed_software_count"])
+        base["verified_packages"] = int(s["verified_migration_packages_count"])
+        base["degraded"] = False
+    except Exception:
+        base["degraded"] = True
+    return base
+
+
+class AcquisitionInstallApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    capability_or_name: str = Field(min_length=2, max_length=200)
+    explicit_operator_approval: bool = True
+
+
+class EnvironmentBuildApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=2, max_length=120)
+    domain: str = Field(default="python_development", max_length=80)
+    project_dir: str = Field(min_length=1, max_length=400)
+    packages: list[str] | None = None
+
+
+class MigrationCreateApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    backup_kind: str = Field(default="full_backup", max_length=60)
+    sections: list[str] | None = None
+    offline_kit: bool = False
+    passphrase: str = Field(default="", max_length=200)
+
+
+class MigrationRestoreApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    archive_path: str = Field(min_length=1, max_length=400)
+    components: list[str] | None = None
+    preview_only: bool = False
+    passphrase: str = Field(default="", max_length=200)
+
+
 class CyberScopeCreateApiRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=2, max_length=160)
@@ -1115,6 +1168,7 @@ def create_app(
             "hybrid_cloud": _hybrid_cloud_health(app.state),
             "kali_intel": _kali_intel_health(app.state),
             "cyber_division": _cyber_division_health(app.state),
+            "acquisition_migration": _acquisition_migration_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -2793,6 +2847,85 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # --- Autonomous Software Acquisition, Environment Builder & Universal Migration (§221–§235) ---
+    @app.get("/api/acquisition/status")
+    async def acquisition_status() -> dict[str, Any]:
+        return engine.platform.acquisition_migration.status_summary()
+
+    @app.get("/api/acquisition/managers")
+    async def acquisition_managers() -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.acquisition_migration.pkg_managers.discover_installed_managers,
+        )
+
+    @app.get("/api/acquisition/discover")
+    async def acquisition_discover(q: str) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.acquisition_migration.discovery.discover_for_capability_or_tool,
+            q,
+        )
+
+    @app.post("/api/acquisition/install")
+    async def acquisition_install(payload: AcquisitionInstallApiRequest) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.acquisition_migration.installer.acquire_verify_and_register,
+            payload.capability_or_name,
+            explicit_operator_approval=payload.explicit_operator_approval,
+        )
+
+    @app.get("/api/acquisition/inventory")
+    async def acquisition_inventory() -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.acquisition_migration.lifecycle.generate_software_inventory,
+        )
+
+    @app.post("/api/acquisition/environment")
+    async def acquisition_build_environment(payload: EnvironmentBuildApiRequest) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                engine.platform.acquisition_migration.env_builder.build_working_environment,
+                name=payload.name,
+                domain=payload.domain,
+                project_dir=payload.project_dir,
+                packages=payload.packages,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/migration/packages")
+    async def migration_list_packages() -> dict[str, Any]:
+        return {"packages": engine.platform.acquisition_migration.db.list_migration_packages()}
+
+    @app.post("/api/migration/create")
+    async def migration_create_package(payload: MigrationCreateApiRequest) -> dict[str, Any]:
+        try:
+            if payload.sections or payload.offline_kit:
+                return await asyncio.to_thread(
+                    engine.platform.acquisition_migration.migration.create_migration_package,
+                    sections=payload.sections,
+                    offline_kit=payload.offline_kit,
+                    encrypt_entire_archive_passphrase=payload.passphrase,
+                    backup_kind=payload.backup_kind,
+                )
+            return await asyncio.to_thread(
+                engine.platform.acquisition_migration.backup.create_verified_backup,
+                payload.backup_kind,
+                passphrase=payload.passphrase,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/migration/restore")
+    async def migration_restore_package(payload: MigrationRestoreApiRequest) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.acquisition_migration.migration.restore_migration_package,
+            payload.archive_path,
+            components_to_restore=payload.components,
+            preview_only=payload.preview_only,
+            decrypt_archive_passphrase=payload.passphrase,
+            credential_passphrase=payload.passphrase,
+        )
 
     return app
 

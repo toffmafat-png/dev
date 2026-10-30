@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from nova.acquisition_migration.service import AutonomousAcquisitionAndMigrationService
 from nova.autonomy import AutonomyPolicy
 from nova.capabilities import CapabilityRegistry, prioritize, recommendation_catalogue
 from nova.config import Settings
@@ -44,6 +45,7 @@ from nova.sandbox import Sandbox
 from nova.self_improvement import ControlledImprovementEngine
 from nova.system_access.service import SystemAccessService
 from nova.terminal import TerminalWorkspace
+from nova.tools.acquisition_migration import build_acquisition_migration_tools
 from nova.tools.creation import build_creation_tools
 from nova.tools.cyber_division import build_cyber_division_tools
 from nova.tools.kali_intel import build_kali_intel_tools
@@ -328,6 +330,16 @@ class PlatformService:
         for cy_tool in build_cyber_division_tools(lambda: self.cyber_division):
             if self.tools.get(cy_tool.name) is None:
                 self.tools.register(cy_tool)
+        self.acquisition_migration = AutonomousAcquisitionAndMigrationService(
+            db=self.db,
+            workspace_dir=workspace_dir,
+            kali_intel=self.kali_intel,
+            capabilities=self.capabilities,
+            tool_registry=self.tools,
+        )
+        for am_tool in build_acquisition_migration_tools(lambda: self.acquisition_migration):
+            if self.tools.get(am_tool.name) is None:
+                self.tools.register(am_tool)
 
     def _register_baseline_integrations(self) -> None:
         self.gateway.register(

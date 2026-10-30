@@ -159,6 +159,7 @@ class DesktopRuntime:
         self.hybrid_cloud = self.platform.hybrid_cloud
         self.kali_intel = self.platform.kali_intel
         self.cyber_division = self.platform.cyber_division
+        self.acquisition_migration = self.platform.acquisition_migration
         self.hybrid_cloud.bind_runtime_orchestrator(self.model_manager, self.intelligence)
         self.async_service = AsyncService()
         self.closed = False

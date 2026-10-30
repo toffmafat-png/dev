@@ -1028,6 +1028,98 @@ class Database:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS software_acquisition_policy (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    automatically_permitted_json TEXT NOT NULL DEFAULT '[]',
+                    preauthorized_operations_json TEXT NOT NULL DEFAULT '[]',
+                    restricted_operations_json TEXT NOT NULL DEFAULT '[]',
+                    approved_packages_json TEXT NOT NULL DEFAULT '[]',
+                    approved_directories_json TEXT NOT NULL DEFAULT '[]',
+                    allow_paid_purchases INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS managed_software_inventory (
+                    software_id TEXT PRIMARY KEY,
+                    app_name TEXT NOT NULL,
+                    package_name TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'local_utilities',
+                    manager TEXT NOT NULL DEFAULT 'local_bundle',
+                    install_source TEXT NOT NULL DEFAULT '',
+                    installed_version TEXT NOT NULL DEFAULT '',
+                    executable_path TEXT NOT NULL DEFAULT '',
+                    dependencies_json TEXT NOT NULL DEFAULT '[]',
+                    config_location TEXT NOT NULL DEFAULT '',
+                    update_available TEXT NOT NULL DEFAULT '',
+                    verification_status TEXT NOT NULL DEFAULT 'verified',
+                    provenance_json TEXT NOT NULL DEFAULT '{}',
+                    resource_consumption_json TEXT NOT NULL DEFAULT '{}',
+                    related_projects_json TEXT NOT NULL DEFAULT '[]',
+                    associated_capabilities_json TEXT NOT NULL DEFAULT '[]',
+                    uninstall_instructions TEXT NOT NULL DEFAULT '',
+                    health_status TEXT NOT NULL DEFAULT 'healthy',
+                    installed_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_managed_sw_pkg ON managed_software_inventory(package_name, manager);
+                CREATE TABLE IF NOT EXISTS environment_profiles (
+                    profile_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    domain TEXT NOT NULL,
+                    project_dir TEXT NOT NULL DEFAULT '',
+                    isolated_env_path TEXT NOT NULL DEFAULT '',
+                    runtime_version TEXT NOT NULL DEFAULT '',
+                    packages_json TEXT NOT NULL DEFAULT '[]',
+                    lockfile_paths_json TEXT NOT NULL DEFAULT '[]',
+                    config_files_json TEXT NOT NULL DEFAULT '[]',
+                    resource_requirements_json TEXT NOT NULL DEFAULT '{}',
+                    validation_report_json TEXT NOT NULL DEFAULT '{}',
+                    setup_instructions TEXT NOT NULL DEFAULT '',
+                    portable_spec_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS migration_packages (
+                    package_id TEXT PRIMARY KEY,
+                    archive_path TEXT NOT NULL,
+                    format_version TEXT NOT NULL DEFAULT 'nova-dev-migration-v1',
+                    compression TEXT NOT NULL DEFAULT 'gzip',
+                    backup_kind TEXT NOT NULL DEFAULT 'full_backup',
+                    source_os_json TEXT NOT NULL DEFAULT '{}',
+                    hardware_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                    selections_json TEXT NOT NULL DEFAULT '{}',
+                    encrypted INTEGER NOT NULL DEFAULT 0,
+                    credentials_mode TEXT NOT NULL DEFAULT 'excluded',
+                    volumes_json TEXT NOT NULL DEFAULT '[]',
+                    checksum_sha256 TEXT NOT NULL DEFAULT '',
+                    verified INTEGER NOT NULL DEFAULT 0,
+                    offline_kit INTEGER NOT NULL DEFAULT 0,
+                    manifest_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS migration_audit_records (
+                    id TEXT PRIMARY KEY,
+                    operation TEXT NOT NULL,
+                    package_id TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    preview_only INTEGER NOT NULL DEFAULT 0,
+                    checkpoint_json TEXT NOT NULL DEFAULT '{}',
+                    restored_components_json TEXT NOT NULL DEFAULT '[]',
+                    skipped_or_failed_json TEXT NOT NULL DEFAULT '[]',
+                    hardware_adaptations_json TEXT NOT NULL DEFAULT '[]',
+                    rollback_backup_id TEXT NOT NULL DEFAULT '',
+                    detail_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS software_quarantine_records (
+                    id TEXT PRIMARY KEY,
+                    artifact_name TEXT NOT NULL,
+                    origin_url TEXT NOT NULL DEFAULT '',
+                    quarantine_path TEXT NOT NULL,
+                    sha256 TEXT NOT NULL DEFAULT '',
+                    reason TEXT NOT NULL,
+                    provenance_report_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -5132,6 +5224,450 @@ class Database:
             d["last_report"] = json.loads(d.pop("last_report_json") or "{}")
             out.append(d)
         return out
+
+    # --------------------------- §221–§235 Software Acquisition, Environments & Migration
+
+    def get_software_acquisition_policy(self, defaults: dict[str, Any] | None = None) -> dict[str, Any]:
+        now = utc_now()
+        base = defaults or {
+            "automatically_permitted": [
+                "project_local_dependencies",
+                "virtual_environment_creation",
+                "approved_documentation_download",
+                "approved_lightweight_utilities",
+                "isolated_project_env_update",
+                "user_level_tool_configuration",
+            ],
+            "preauthorized_operations": [],
+            "restricted_operations": [
+                "modify_apt_repositories",
+                "install_unverified_packages",
+                "replace_core_system_libraries",
+                "change_boot_critical_components",
+                "major_kernel_changes",
+                "change_system_security_configuration",
+                "remove_important_packages",
+                "destructive_system_upgrades",
+            ],
+            "approved_packages": [],
+            "approved_directories": [],
+            "allow_paid_purchases": False,
+        }
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO software_acquisition_policy (
+                    id, automatically_permitted_json, preauthorized_operations_json,
+                    restricted_operations_json, approved_packages_json,
+                    approved_directories_json, allow_paid_purchases, updated_at
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _dump(base["automatically_permitted"]),
+                    _dump(base["preauthorized_operations"]),
+                    _dump(base["restricted_operations"]),
+                    _dump(base["approved_packages"]),
+                    _dump(base["approved_directories"]),
+                    1 if base.get("allow_paid_purchases") else 0,
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM software_acquisition_policy WHERE id = 1").fetchone()
+        if r is None:
+            return dict(base)
+        return {
+            "automatically_permitted": json.loads(r["automatically_permitted_json"] or "[]"),
+            "preauthorized_operations": json.loads(r["preauthorized_operations_json"] or "[]"),
+            "restricted_operations": json.loads(r["restricted_operations_json"] or "[]"),
+            "approved_packages": json.loads(r["approved_packages_json"] or "[]"),
+            "approved_directories": json.loads(r["approved_directories_json"] or "[]"),
+            "allow_paid_purchases": bool(r["allow_paid_purchases"]),
+            "updated_at": str(r["updated_at"]),
+        }
+
+    def update_software_acquisition_policy(self, updates: dict[str, Any]) -> dict[str, Any]:
+        cur = self.get_software_acquisition_policy()
+        merged = {**cur, **updates}
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE software_acquisition_policy SET
+                    automatically_permitted_json = ?,
+                    preauthorized_operations_json = ?,
+                    restricted_operations_json = ?,
+                    approved_packages_json = ?,
+                    approved_directories_json = ?,
+                    allow_paid_purchases = ?,
+                    updated_at = ?
+                WHERE id = 1
+                """,
+                (
+                    _dump(merged["automatically_permitted"]),
+                    _dump(merged["preauthorized_operations"]),
+                    _dump(merged["restricted_operations"]),
+                    _dump(merged["approved_packages"]),
+                    _dump(merged["approved_directories"]),
+                    1 if merged.get("allow_paid_purchases") else 0,
+                    now,
+                ),
+            )
+        return self.get_software_acquisition_policy()
+
+    @staticmethod
+    def _unpack_managed_software(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["dependencies"] = json.loads(d.pop("dependencies_json") or "[]")
+        d["provenance"] = json.loads(d.pop("provenance_json") or "{}")
+        d["resource_consumption"] = json.loads(d.pop("resource_consumption_json") or "{}")
+        d["related_projects"] = json.loads(d.pop("related_projects_json") or "[]")
+        d["associated_capabilities"] = json.loads(d.pop("associated_capabilities_json") or "[]")
+        return d
+
+    def upsert_managed_software(self, item: dict[str, Any]) -> dict[str, Any]:
+        sid = str(item.get("software_id") or f"sw-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO managed_software_inventory (
+                    software_id, app_name, package_name, category, manager,
+                    install_source, installed_version, executable_path, dependencies_json,
+                    config_location, update_available, verification_status, provenance_json,
+                    resource_consumption_json, related_projects_json, associated_capabilities_json,
+                    uninstall_instructions, health_status, installed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(software_id) DO UPDATE SET
+                    app_name = excluded.app_name,
+                    package_name = excluded.package_name,
+                    category = excluded.category,
+                    manager = excluded.manager,
+                    install_source = excluded.install_source,
+                    installed_version = excluded.installed_version,
+                    executable_path = excluded.executable_path,
+                    dependencies_json = excluded.dependencies_json,
+                    config_location = excluded.config_location,
+                    update_available = excluded.update_available,
+                    verification_status = excluded.verification_status,
+                    provenance_json = excluded.provenance_json,
+                    resource_consumption_json = excluded.resource_consumption_json,
+                    related_projects_json = excluded.related_projects_json,
+                    associated_capabilities_json = excluded.associated_capabilities_json,
+                    uninstall_instructions = excluded.uninstall_instructions,
+                    health_status = excluded.health_status,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    sid[:80],
+                    str(item.get("app_name") or sid)[:120],
+                    str(item.get("package_name") or item.get("app_name") or sid)[:120],
+                    str(item.get("category") or "local_utilities")[:80],
+                    str(item.get("manager") or "local_bundle")[:60],
+                    str(item.get("install_source") or "")[:300],
+                    str(item.get("installed_version") or "0.1.0")[:60],
+                    str(item.get("executable_path") or "")[:400],
+                    _dump(item.get("dependencies") or []),
+                    str(item.get("config_location") or "")[:400],
+                    str(item.get("update_available") or "")[:60],
+                    str(item.get("verification_status") or "verified")[:40],
+                    _dump(item.get("provenance") or {}),
+                    _dump(item.get("resource_consumption") or {}),
+                    _dump(item.get("related_projects") or []),
+                    _dump(item.get("associated_capabilities") or []),
+                    str(item.get("uninstall_instructions") or "")[:500],
+                    str(item.get("health_status") or "healthy")[:40],
+                    str(item.get("installed_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM managed_software_inventory WHERE software_id = ?", (sid[:80],)).fetchone()
+        return self._unpack_managed_software(r) if r else {}
+
+    def get_managed_software(self, software_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute(
+                "SELECT * FROM managed_software_inventory WHERE software_id = ? OR package_name = ? OR app_name = ?",
+                (software_id, software_id, software_id),
+            ).fetchone()
+        return self._unpack_managed_software(r) if r else None
+
+    def list_managed_software(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM managed_software_inventory ORDER BY updated_at DESC LIMIT ?",
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+        return [self._unpack_managed_software(r) for r in rows]
+
+    def delete_managed_software(self, software_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute("DELETE FROM managed_software_inventory WHERE software_id = ?", (software_id,))
+            return cur.rowcount > 0
+
+    def upsert_environment_profile(self, item: dict[str, Any]) -> dict[str, Any]:
+        pid = str(item.get("profile_id") or f"envp-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO environment_profiles (
+                    profile_id, name, domain, project_dir, isolated_env_path,
+                    runtime_version, packages_json, lockfile_paths_json, config_files_json,
+                    resource_requirements_json, validation_report_json, setup_instructions,
+                    portable_spec_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile_id) DO UPDATE SET
+                    name = excluded.name,
+                    domain = excluded.domain,
+                    project_dir = excluded.project_dir,
+                    isolated_env_path = excluded.isolated_env_path,
+                    runtime_version = excluded.runtime_version,
+                    packages_json = excluded.packages_json,
+                    lockfile_paths_json = excluded.lockfile_paths_json,
+                    config_files_json = excluded.config_files_json,
+                    resource_requirements_json = excluded.resource_requirements_json,
+                    validation_report_json = excluded.validation_report_json,
+                    setup_instructions = excluded.setup_instructions,
+                    portable_spec_json = excluded.portable_spec_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    pid[:80],
+                    str(item.get("name") or pid)[:140],
+                    str(item.get("domain") or "python_development")[:80],
+                    str(item.get("project_dir") or "")[:400],
+                    str(item.get("isolated_env_path") or "")[:400],
+                    str(item.get("runtime_version") or "")[:80],
+                    _dump(item.get("packages") or []),
+                    _dump(item.get("lockfile_paths") or []),
+                    _dump(item.get("config_files") or []),
+                    _dump(item.get("resource_requirements") or {}),
+                    _dump(item.get("validation_report") or {}),
+                    str(item.get("setup_instructions") or "")[:4000],
+                    _dump(item.get("portable_spec") or {}),
+                    str(item.get("created_at") or now),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM environment_profiles WHERE profile_id = ?", (pid[:80],)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["packages"] = json.loads(d.pop("packages_json") or "[]")
+        d["lockfile_paths"] = json.loads(d.pop("lockfile_paths_json") or "[]")
+        d["config_files"] = json.loads(d.pop("config_files_json") or "[]")
+        d["resource_requirements"] = json.loads(d.pop("resource_requirements_json") or "{}")
+        d["validation_report"] = json.loads(d.pop("validation_report_json") or "{}")
+        d["portable_spec"] = json.loads(d.pop("portable_spec_json") or "{}")
+        return d
+
+    def list_environment_profiles(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM environment_profiles ORDER BY updated_at DESC").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["packages"] = json.loads(d.pop("packages_json") or "[]")
+            d["lockfile_paths"] = json.loads(d.pop("lockfile_paths_json") or "[]")
+            d["config_files"] = json.loads(d.pop("config_files_json") or "[]")
+            d["resource_requirements"] = json.loads(d.pop("resource_requirements_json") or "{}")
+            d["validation_report"] = json.loads(d.pop("validation_report_json") or "{}")
+            d["portable_spec"] = json.loads(d.pop("portable_spec_json") or "{}")
+            out.append(d)
+        return out
+
+    def upsert_migration_package(self, item: dict[str, Any]) -> dict[str, Any]:
+        mpid = str(item.get("package_id") or f"migpkg-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO migration_packages (
+                    package_id, archive_path, format_version, compression, backup_kind,
+                    source_os_json, hardware_snapshot_json, selections_json, encrypted,
+                    credentials_mode, volumes_json, checksum_sha256, verified, offline_kit,
+                    manifest_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(package_id) DO UPDATE SET
+                    archive_path = excluded.archive_path,
+                    compression = excluded.compression,
+                    backup_kind = excluded.backup_kind,
+                    volumes_json = excluded.volumes_json,
+                    checksum_sha256 = excluded.checksum_sha256,
+                    verified = excluded.verified,
+                    manifest_json = excluded.manifest_json
+                """,
+                (
+                    mpid[:80],
+                    str(item.get("archive_path") or "")[:400],
+                    str(item.get("format_version") or "nova-dev-migration-v1")[:60],
+                    str(item.get("compression") or "gzip")[:32],
+                    str(item.get("backup_kind") or "full_backup")[:60],
+                    _dump(item.get("source_os") or {}),
+                    _dump(item.get("hardware_snapshot") or {}),
+                    _dump(item.get("selections") or {}),
+                    1 if item.get("encrypted") else 0,
+                    str(item.get("credentials_mode") or "excluded")[:40],
+                    _dump(item.get("volumes") or []),
+                    str(item.get("checksum_sha256") or "")[:128],
+                    1 if item.get("verified") else 0,
+                    1 if item.get("offline_kit") else 0,
+                    _dump(item.get("manifest") or {}),
+                    str(item.get("created_at") or now),
+                ),
+            )
+            r = conn.execute("SELECT * FROM migration_packages WHERE package_id = ?", (mpid[:80],)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["source_os"] = json.loads(d.pop("source_os_json") or "{}")
+        d["hardware_snapshot"] = json.loads(d.pop("hardware_snapshot_json") or "{}")
+        d["selections"] = json.loads(d.pop("selections_json") or "{}")
+        d["encrypted"] = bool(d["encrypted"])
+        d["volumes"] = json.loads(d.pop("volumes_json") or "[]")
+        d["verified"] = bool(d["verified"])
+        d["offline_kit"] = bool(d["offline_kit"])
+        d["manifest"] = json.loads(d.pop("manifest_json") or "{}")
+        return d
+
+    def list_migration_packages(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM migration_packages ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 300)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["source_os"] = json.loads(d.pop("source_os_json") or "{}")
+            d["hardware_snapshot"] = json.loads(d.pop("hardware_snapshot_json") or "{}")
+            d["selections"] = json.loads(d.pop("selections_json") or "{}")
+            d["encrypted"] = bool(d["encrypted"])
+            d["volumes"] = json.loads(d.pop("volumes_json") or "[]")
+            d["verified"] = bool(d["verified"])
+            d["offline_kit"] = bool(d["offline_kit"])
+            d["manifest"] = json.loads(d.pop("manifest_json") or "{}")
+            out.append(d)
+        return out
+
+    def record_migration_audit(self, item: dict[str, Any]) -> dict[str, Any]:
+        aid = str(item.get("id") or f"migaud-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO migration_audit_records (
+                    id, operation, package_id, status, preview_only,
+                    checkpoint_json, restored_components_json, skipped_or_failed_json,
+                    hardware_adaptations_json, rollback_backup_id, detail_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status = excluded.status,
+                    checkpoint_json = excluded.checkpoint_json,
+                    restored_components_json = excluded.restored_components_json,
+                    skipped_or_failed_json = excluded.skipped_or_failed_json,
+                    hardware_adaptations_json = excluded.hardware_adaptations_json,
+                    rollback_backup_id = excluded.rollback_backup_id,
+                    detail_json = excluded.detail_json
+                """,
+                (
+                    aid[:80],
+                    str(item.get("operation") or "restore")[:60],
+                    str(item.get("package_id") or "")[:80],
+                    str(item.get("status") or "completed")[:40],
+                    1 if item.get("preview_only") else 0,
+                    _dump(item.get("checkpoint") or {}),
+                    _dump(item.get("restored_components") or []),
+                    _dump(item.get("skipped_or_failed") or []),
+                    _dump(item.get("hardware_adaptations") or []),
+                    str(item.get("rollback_backup_id") or "")[:80],
+                    _dump(item.get("detail") or {}),
+                    str(item.get("created_at") or now),
+                ),
+            )
+            r = conn.execute("SELECT * FROM migration_audit_records WHERE id = ?", (aid[:80],)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["preview_only"] = bool(d["preview_only"])
+        d["checkpoint"] = json.loads(d.pop("checkpoint_json") or "{}")
+        d["restored_components"] = json.loads(d.pop("restored_components_json") or "[]")
+        d["skipped_or_failed"] = json.loads(d.pop("skipped_or_failed_json") or "[]")
+        d["hardware_adaptations"] = json.loads(d.pop("hardware_adaptations_json") or "[]")
+        d["detail"] = json.loads(d.pop("detail_json") or "{}")
+        return d
+
+    def get_migration_audit(self, audit_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            r = conn.execute("SELECT * FROM migration_audit_records WHERE id = ?", (audit_id,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["preview_only"] = bool(d["preview_only"])
+        d["checkpoint"] = json.loads(d.pop("checkpoint_json") or "{}")
+        d["restored_components"] = json.loads(d.pop("restored_components_json") or "[]")
+        d["skipped_or_failed"] = json.loads(d.pop("skipped_or_failed_json") or "[]")
+        d["hardware_adaptations"] = json.loads(d.pop("hardware_adaptations_json") or "[]")
+        d["detail"] = json.loads(d.pop("detail_json") or "{}")
+        return d
+
+    def list_migration_audits(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM migration_audit_records ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 300)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["preview_only"] = bool(d["preview_only"])
+            d["checkpoint"] = json.loads(d.pop("checkpoint_json") or "{}")
+            d["restored_components"] = json.loads(d.pop("restored_components_json") or "[]")
+            d["skipped_or_failed"] = json.loads(d.pop("skipped_or_failed_json") or "[]")
+            d["hardware_adaptations"] = json.loads(d.pop("hardware_adaptations_json") or "[]")
+            d["detail"] = json.loads(d.pop("detail_json") or "{}")
+            out.append(d)
+        return out
+
+    def record_software_quarantine(self, item: dict[str, Any]) -> dict[str, Any]:
+        qid = str(item.get("id") or f"swquar-{uuid.uuid4().hex[:10]}")
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO software_quarantine_records (
+                    id, artifact_name, origin_url, quarantine_path,
+                    sha256, reason, provenance_report_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    qid[:80],
+                    str(item.get("artifact_name") or qid)[:140],
+                    str(item.get("origin_url") or "")[:300],
+                    str(item.get("quarantine_path") or "")[:400],
+                    str(item.get("sha256") or "")[:128],
+                    str(item.get("reason") or "insufficient_provenance")[:300],
+                    _dump(item.get("provenance_report") or {}),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM software_quarantine_records WHERE id = ?", (qid[:80],)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["provenance_report"] = json.loads(d.pop("provenance_report_json") or "{}")
+        return d
+
+    def list_software_quarantines(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM software_quarantine_records ORDER BY created_at DESC").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["provenance_report"] = json.loads(d.pop("provenance_report_json") or "{}")
+            out.append(d)
+        return out
+
 
 
 
