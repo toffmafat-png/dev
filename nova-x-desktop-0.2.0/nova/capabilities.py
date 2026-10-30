@@ -667,6 +667,30 @@ class CapabilityRegistry:
             raise KeyError(f"Unknown feature: {feature_id}")
         self._features[feature_id] = replace(feature, last_test=f"{result} @ {_now()}")
 
+    def register_acquired_capability(
+        self,
+        *,
+        capability_id: str,
+        label: str,
+        purpose: str,
+        executable_path: str,
+        version: str = "",
+        section: str = "§222",
+    ) -> Feature:
+        """§222.15 & §235.7 Register a verified newly acquired application in DEV's CapabilityRegistry."""
+        req = Requirement(kind=REQUIREMENT_BINARY, name=executable_path, purpose=purpose)
+        self.probes[req.key()] = probe_binary(executable_path)
+        feat = Feature(
+            id=capability_id,
+            label=label,
+            section=section,
+            purpose=purpose,
+            requirements=(req,),
+            last_test=f"verified ({version or 'ok'}) @ {_now()}",
+        )
+        self._features[capability_id] = feat
+        return self.evaluate(capability_id, force=True)
+
     # -- reporting
 
     def get(self, feature_id: str) -> Feature:

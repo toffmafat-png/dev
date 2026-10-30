@@ -52,6 +52,16 @@ def _parser() -> argparse.ArgumentParser:
     cyber_cmd.add_argument("--inspect-sample", default="", help="Run static non-executing binary/artifact inspection on a file")
     cyber_cmd.add_argument("--research", default="", help="Research a CVE, CWE, or security advisory across 8 epistemic fields")
     cyber_cmd.add_argument("--tutor", default="", help="Generate an adaptive cybersecurity training module (17 disciplines)")
+    acq_cmd = subparsers.add_parser("acquire", help="Autonomous Software Acquisition, Dependency Resolution & Environment Builder (§221–§228)")
+    acq_cmd.add_argument("--discover", default="", help="Run 15-step intelligent software discovery for a capability or tool")
+    acq_cmd.add_argument("--install", default="", help="Acquire, provenance-verify, test, and register a utility under policy")
+    acq_cmd.add_argument("--managers", action="store_true", help="Discover installed package managers across all 7 ecosystems")
+    acq_cmd.add_argument("--inventory", action="store_true", help="Generate verified software lifecycle inventory")
+    mig_cmd = subparsers.add_parser("migrate", help="DEV Portable Identity, Backup, Offline Kit & Hardware-Aware Restore (§229–§234)")
+    mig_cmd.add_argument("--backup", default="", help="Create & verify a backup kind (e.g. full_backup, config_only, memory_only)")
+    mig_cmd.add_argument("--preview", default="", help="Preview compatibility & conflicts for a migration archive safely")
+    mig_cmd.add_argument("--restore", default="", help="Restore a verified migration archive with pre-restore rollback backup")
+    mig_cmd.add_argument("--offline-kit", action="store_true", help="Build a verified offline migration & reinstallation kit")
     worker = subparsers.add_parser("worker", help="Run optional user-level background goal/task worker")
     worker.add_argument("--once", action="store_true", help="Run one scheduled-goal check tick and exit")
     worker.add_argument("--poll-seconds", type=int, default=15, help="Polling interval in seconds (5–300)")
@@ -321,6 +331,46 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(cy.expert_tutor.generate_adaptive_module(args.tutor), indent=2, default=str))
                 return 0
             print(json.dumps(cy.status_summary(), indent=2, default=str))
+            return 0
+        finally:
+            runtime.close()
+    if args.action == "acquire":
+        runtime = DesktopRuntime()
+        try:
+            am = runtime.acquisition_migration
+            if args.managers:
+                print(json.dumps(am.pkg_managers.discover_installed_managers(), indent=2, default=str))
+                return 0
+            if args.inventory:
+                print(json.dumps(am.lifecycle.generate_software_inventory(), indent=2, default=str))
+                return 0
+            if args.discover:
+                print(json.dumps(am.discovery.discover_for_capability_or_tool(args.discover), indent=2, default=str))
+                return 0
+            if args.install:
+                print(json.dumps(am.installer.acquire_verify_and_register(args.install, explicit_operator_approval=True), indent=2, default=str))
+                return 0
+            print(json.dumps(am.status_summary(), indent=2, default=str))
+            return 0
+        finally:
+            runtime.close()
+    if args.action == "migrate":
+        runtime = DesktopRuntime()
+        try:
+            am = runtime.acquisition_migration
+            if args.backup:
+                print(json.dumps(am.backup.create_verified_backup(args.backup), indent=2, default=str))
+                return 0
+            if args.offline_kit:
+                print(json.dumps(am.migration.create_migration_package(offline_kit=True, package_name="dev-offline-kit"), indent=2, default=str))
+                return 0
+            if args.preview:
+                print(json.dumps(am.migration.restore_migration_package(args.preview, preview_only=True), indent=2, default=str))
+                return 0
+            if args.restore:
+                print(json.dumps(am.migration.restore_migration_package(args.restore), indent=2, default=str))
+                return 0
+            print(json.dumps(am.status_summary(), indent=2, default=str))
             return 0
         finally:
             runtime.close()
