@@ -149,6 +149,8 @@ class TaskEngine:
         )
         self.platform.unified_os.cognition = self.cognition
         self.platform.privacy_intel.research_assistant.cognition = self.cognition
+        if hasattr(provider, "manager") and hasattr(provider, "chat"):
+            self.platform.hybrid_cloud.bind_runtime_orchestrator(provider.manager, provider)
 
     def launch(self, task_id: str) -> None:
         job = self._jobs.get(task_id)

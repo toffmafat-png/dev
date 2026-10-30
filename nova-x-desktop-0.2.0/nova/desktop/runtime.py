@@ -156,6 +156,8 @@ class DesktopRuntime:
         self.creation = self.platform.creation
         self.system_access = self.platform.system_access
         self.privacy_intel = self.platform.privacy_intel
+        self.hybrid_cloud = self.platform.hybrid_cloud
+        self.hybrid_cloud.bind_runtime_orchestrator(self.model_manager, self.intelligence)
         self.async_service = AsyncService()
         self.closed = False
         self.database.recover_interrupted_tasks()

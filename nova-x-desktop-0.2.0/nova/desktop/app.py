@@ -603,8 +603,13 @@ class NovaWindow(QMainWindow):
         self.save_profile_button.clicked.connect(self._save_profile)
         create_layout.addWidget(self.save_profile_button, 0, Qt.AlignmentFlag.AlignRight)
         _, notice = _card(right_layout, "subcard")
-        notice.addWidget(_label("Usage and costs", "sectionTitle"))
-        notice.addWidget(_label("Saving a profile makes no provider request. Connection and tool validation send test prompts and may be billable. NOVA displays provider-reported usage and only estimates cost when rates are configured; no price or account quota is assumed.", "muted", word_wrap=True))
+        notice.addWidget(_label("Cloud Privacy Gateway & Offline Queue (§1–§11)", "sectionTitle"))
+        self.gateway_privacy_summary = _label(
+            "Local OS hosts all memory, tasks, and tools. Outbound cloud calls enforce context minimization, secret redaction, and secret-free transmission logging.",
+            "muted",
+            word_wrap=True,
+        )
+        notice.addWidget(self.gateway_privacy_summary)
         splitter.addWidget(right)
         splitter.setSizes([490, 580])
         outer.addWidget(splitter, 1)
@@ -1315,6 +1320,18 @@ class NovaWindow(QMainWindow):
         backend = self.runtime.secret_store.backend_status()
         self.secret_note.setText(backend["detail"])
         self.api_key.setEnabled(bool(backend["available"]))
+        if hasattr(self, "gateway_privacy_summary") and hasattr(self.runtime, "hybrid_cloud"):
+            txms = self.runtime.hybrid_cloud.db.list_cloud_transmissions(limit=5)
+            queued_n = len(self.runtime.hybrid_cloud.db.list_offline_cloud_tasks(status="queued_waiting_cloud", limit=50))
+            local_projs = len([p for p in self.runtime.hybrid_cloud.db.list_local_only_projects() if p.get("local_only")])
+            last_txm = (
+                f"Latest outbound ledger: {txms[0]['provider_type']} ({txms[0]['decision']}, files={len(txms[0]['included_files'])})"
+                if txms
+                else "No external cloud model transmissions logged yet."
+            )
+            self.gateway_privacy_summary.setText(
+                f"Offline cloud queue: {queued_n} waiting · Local-only projects: {local_projs}\n{last_txm}"
+            )
         self._refresh_status()
 
     def _profile_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
@@ -1326,7 +1343,8 @@ class NovaWindow(QMainWindow):
             return
         summary = (
             f"{profile.get('provider_label')} · {profile.get('model_id')}\n"
-            f"Status: {profile.get('status')} · configured: {profile.get('configured')} · connected: {profile.get('connected')} · inference-tested: {profile.get('tested')}\n"
+            f"Status: {profile.get('status')} · configured: {profile.get('configured')} · connected: {profile.get('connected')} · "
+            f"available: {profile.get('available')} · tested: {profile.get('tested')} · actually_used: {profile.get('actually_used')}\n"
             f"Capabilities: {', '.join(profile.get('capabilities', []))} · tools test: {profile.get('tools_test_status', 'untested')}\n"
             f"Credential reference: {profile.get('api_key_env')} (secret value not shown)"
         )

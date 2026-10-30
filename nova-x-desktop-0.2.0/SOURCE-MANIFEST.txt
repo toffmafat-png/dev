@@ -8,6 +8,7 @@ Contents:
   README.md
   app.py
   docs/COGNITION.md
+  docs/CORRECTED_MASTER_ARCHITECTURE.md
   docs/CREATION_ENGINE.md
   docs/EXTENSION_SDK.md
   docs/FEATURE_MATRIX.md
@@ -61,6 +62,13 @@ Contents:
   nova/engine.py
   nova/events.py
   nova/governance.py
+  nova/hybrid_cloud/__init__.py
+  nova/hybrid_cloud/acceptance.py
+  nova/hybrid_cloud/architecture.py
+  nova/hybrid_cloud/gateway_and_fusion.py
+  nova/hybrid_cloud/persistence_and_resources.py
+  nova/hybrid_cloud/privacy_gateway.py
+  nova/hybrid_cloud/service.py
   nova/intelligence.py
   nova/knowledge.py
   nova/main.py
@@ -128,6 +136,7 @@ Contents:
   tests/test_cognition_api.py
   tests/test_config.py
   tests/test_controls.py
+  tests/test_corrected_master_architecture.py
   tests/test_creation_engine.py
   tests/test_desktop.py
   tests/test_desktop_ui.py
@@ -179,6 +188,11 @@ Notes:
     lives in nova/privacy_intel/ and nova/tools/privacy_intel.py, documented in
     docs/PRIVACY_INTEL.md and verified by `python -m nova.privacy_intel.acceptance`
     (15 acceptance checks) and tests/test_privacy_intel_module.py.
+  * The §1–§11 Corrected Master Hybrid Architecture (Locally Hosted Autonomous AI
+    Platform Powered by Cloud Frontier Intelligence) lives in nova/hybrid_cloud/,
+    documented in docs/CORRECTED_MASTER_ARCHITECTURE.md and verified by
+    `python -m nova.hybrid_cloud.acceptance` (15 acceptance gates) and
+    tests/test_corrected_master_architecture.py.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).

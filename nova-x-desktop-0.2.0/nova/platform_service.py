@@ -23,6 +23,8 @@ from nova.desktop_control import LinuxDesktopController, build_desktop_control_t
 from nova.devtools import DeveloperWorkspace
 from nova.events import Event, EventBus
 from nova.governance import PrivacyGovernor, SystemHealthCenter
+from nova.hybrid_cloud.service import HybridCloudIntelligenceService, register_hybrid_cloud_tools
+from nova.intelligence import IntelligenceOrchestrator, ModelManager
 from nova.knowledge import KnowledgeStore
 from nova.mcp_client import IntegrationGateway, IntegrationRecord, MCPClientManager
 from nova.memory_hub import SharedMemorySystem
@@ -96,6 +98,7 @@ class PlatformService:
     unified_os: UnifiedOperatingKernel = field(init=False)
     system_access: SystemAccessService = field(init=False)
     privacy_intel: PrivacyIntelligenceService = field(init=False)
+    hybrid_cloud: HybridCloudIntelligenceService = field(init=False)
 
     def __post_init__(self) -> None:
         data_dir = Path(self.settings.data_dir)
@@ -283,6 +286,22 @@ class PlatformService:
         for pi_tool in build_privacy_intel_tools(lambda: self.privacy_intel):
             if self.tools.get(pi_tool.name) is None:
                 self.tools.register(pi_tool)
+        default_mm = ModelManager(self.settings, self.db)
+        default_orch = IntelligenceOrchestrator(default_mm, self.settings, self.db)
+        self.hybrid_cloud = HybridCloudIntelligenceService(
+            settings=self.settings,
+            db=self.db,
+            model_manager=default_mm,
+            orchestrator=default_orch,
+            tool_registry=self.tools,
+            autonomy_policy=self.autonomy_policy,
+            resource_monitor=self.resources,
+            redactor=self.redactor,
+            knowledge_store=self.knowledge,
+            offline_coordinator=self.offline,
+            app_root=resolved_repo,
+        )
+        register_hybrid_cloud_tools(self.tools, self.hybrid_cloud)
 
     def _register_baseline_integrations(self) -> None:
         self.gateway.register(

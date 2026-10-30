@@ -650,6 +650,76 @@ def _privacy_intel_health(app_state: Any) -> dict[str, Any]:
     return base
 
 
+def _hybrid_cloud_health(app_state: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "architecture": "locally_hosted_os_with_cloud_frontier_intelligence",
+        "cloud_online": False,
+        "queued_cloud_tasks": 0,
+        "local_only_projects": 0,
+        "degraded": True,
+        "detail": "/api/gateway/status",
+    }
+    try:
+        platform_svc = getattr(app_state, "platform", None) or getattr(getattr(app_state, "engine", None), "platform", None)
+        hc = getattr(platform_svc, "hybrid_cloud", None) if platform_svc is not None else None
+        if hc is None:
+            return base
+        base["cloud_online"] = bool(hc.offline_queue.is_cloud_online())
+        base["queued_cloud_tasks"] = len(hc.db.list_offline_cloud_tasks(status="queued_waiting_cloud", limit=100))
+        base["local_only_projects"] = len([p for p in hc.db.list_local_only_projects() if p.get("local_only")])
+        base["degraded"] = False
+    except Exception:
+        base["degraded"] = True
+    return base
+
+
+class DynamicProviderApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider_type: str = Field(min_length=2, max_length=48)
+    label: str = Field(min_length=1, max_length=120)
+    default_base_url: str = Field(min_length=8, max_length=300)
+    default_key_env: str = Field(default="AI_API_KEY", max_length=64)
+    adapter_family: str = Field(default="openai_compatible", max_length=48)
+    local_only: bool = False
+    note: str = Field(default="", max_length=300)
+
+
+class ProviderPrivacyPolicyApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider_type: str = Field(min_length=2, max_length=64)
+    enabled: bool = True
+    max_payload_chars: int = Field(default=24000, ge=256, le=500000)
+    allow_diagnostic_context: bool = True
+    allow_file_excerpts: bool = True
+    require_sensitive_transfer_approval: bool = True
+    allowed_categories: list[str] = Field(default_factory=lambda: ["prompt", "diagnostics", "workspace_excerpt"])
+
+
+class LocalOnlyProjectApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_key: str = Field(min_length=1, max_length=120)
+    project_path: str = Field(default="", max_length=500)
+    local_only: bool = True
+    allow_quantized_local_fallback: bool = True
+    reason: str = Field(default="", max_length=400)
+
+
+class LlamaCppFitApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_id: str = Field(min_length=1, max_length=200)
+    available_ram_mb: int | None = Field(default=None, ge=256, le=1048576)
+
+
+class ExecutionPlanApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    objective: str = Field(min_length=1, max_length=4000)
+    deadline_ms: int | None = Field(default=None, ge=100, le=600000)
+    cost_budget_usd: float | None = Field(default=None, ge=0.0, le=1000.0)
+    required_storage_mb: int = Field(default=0, ge=0, le=10485760)
+    api_quota_remaining: int | None = Field(default=None, ge=0, le=1000000)
+    allow_local_fallback: bool = True
+
+
 class PrivacyConfigApiRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tor_enabled: bool | None = None
@@ -901,6 +971,7 @@ def create_app(
             "available_models": sum(item["available"] for item in model_statuses),
             "connected_models": sum(item["connected"] for item in model_statuses),
             "tested_models": sum(item["tested"] for item in model_statuses),
+            "actually_used_models": sum(item.get("actually_used", False) for item in model_statuses),
             "web_search_configured": bool(settings.tavily_api_key),
             "authentication_required": bool(settings.access_token),
             "low_resource_mode": settings.low_resource_mode,
@@ -918,6 +989,7 @@ def create_app(
             "unified_os": _unified_os_health(app.state),
             "system_access": _system_access_health(app.state),
             "privacy_intel": _privacy_intel_health(app.state),
+            "hybrid_cloud": _hybrid_cloud_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -2252,13 +2324,106 @@ def create_app(
             raise HTTPException(status_code=404, detail=res["reason"])
         return res
 
+    # --- Corrected Master Architecture (§1–§11): Unified Cloud Frontier Gateway & Privacy Firewall ---
+
+    @app.get("/api/gateway/status")
+    async def gateway_status() -> dict[str, Any]:
+        return engine.platform.hybrid_cloud.status_summary()
+
+    @app.get("/api/gateway/lifecycle")
+    async def gateway_model_lifecycle() -> dict[str, Any]:
+        return engine.platform.hybrid_cloud.gateway.model_lifecycle_inventory()
+
+    @app.post("/api/gateway/providers")
+    async def gateway_register_provider(payload: DynamicProviderApiRequest) -> dict[str, Any]:
+        try:
+            return {"provider": engine.platform.hybrid_cloud.gateway.register_provider(payload.model_dump())}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/gateway/providers/{provider_type}")
+    async def gateway_remove_provider(provider_type: str) -> dict[str, Any]:
+        removed = engine.platform.hybrid_cloud.gateway.remove_provider(provider_type)
+        if not removed:
+            raise HTTPException(status_code=404, detail="Dynamic provider not found or is a built-in provider.")
+        return {"removed": True, "provider_type": provider_type}
+
+    @app.get("/api/gateway/privacy/policies")
+    async def gateway_list_privacy_policies() -> dict[str, Any]:
+        return {"policies": engine.platform.hybrid_cloud.db.list_provider_privacy_policies()}
+
+    @app.post("/api/gateway/privacy/policies")
+    async def gateway_upsert_privacy_policy(payload: ProviderPrivacyPolicyApiRequest) -> dict[str, Any]:
+        return {"policy": engine.platform.hybrid_cloud.privacy_gateway.set_provider_policy(payload.model_dump())}
+
+    @app.get("/api/gateway/privacy/local-projects")
+    async def gateway_list_local_projects() -> dict[str, Any]:
+        return {"projects": engine.platform.hybrid_cloud.db.list_local_only_projects()}
+
+    @app.post("/api/gateway/privacy/local-projects")
+    async def gateway_set_local_project(payload: LocalOnlyProjectApiRequest) -> dict[str, Any]:
+        proj = engine.platform.hybrid_cloud.privacy_gateway.set_project_local_only(
+            payload.project_key,
+            project_path=payload.project_path,
+            local_only=payload.local_only,
+            allow_quantized_local_fallback=payload.allow_quantized_local_fallback,
+            reason=payload.reason,
+        )
+        return {"project": proj}
+
+    @app.get("/api/gateway/privacy/transmissions")
+    async def gateway_list_transmissions(provider_type: str = "", limit: int = 50) -> dict[str, Any]:
+        return {
+            "transmissions": engine.platform.hybrid_cloud.db.list_cloud_transmissions(
+                provider_type=provider_type,
+                limit=max(1, min(limit, 200)),
+            )
+        }
+
+    @app.get("/api/gateway/offline-queue")
+    async def gateway_offline_queue(status: str = "") -> dict[str, Any]:
+        return {
+            "cloud_online": engine.platform.hybrid_cloud.offline_queue.is_cloud_online(),
+            "items": engine.platform.hybrid_cloud.db.list_offline_cloud_tasks(status=status, limit=100),
+        }
+
+    @app.post("/api/gateway/offline-queue/drain")
+    async def gateway_drain_offline_queue() -> dict[str, Any]:
+        return await engine.platform.hybrid_cloud.offline_queue.drain_queued_cloud_tasks()
+
+    @app.post("/api/gateway/llama-cpp/check")
+    async def gateway_llama_cpp_check(payload: LlamaCppFitApiRequest) -> dict[str, Any]:
+        return engine.platform.hybrid_cloud.llama_cpp_advisor.evaluate_candidate(
+            payload.model_id,
+            available_ram_mb=payload.available_ram_mb,
+        )
+
+    @app.get("/api/gateway/resources")
+    async def gateway_separated_resources() -> dict[str, Any]:
+        return engine.platform.hybrid_cloud.resource_intel.snapshot_separated_telemetry()
+
+    @app.post("/api/gateway/resources/plan")
+    async def gateway_select_execution_plan(payload: ExecutionPlanApiRequest) -> dict[str, Any]:
+        return engine.platform.hybrid_cloud.resource_intel.select_optimal_execution_plan(
+            objective=payload.objective,
+            deadline_ms=payload.deadline_ms,
+            cost_budget_usd=payload.cost_budget_usd,
+            required_storage_mb=payload.required_storage_mb,
+            api_quota_remaining=payload.api_quota_remaining,
+            allow_local_fallback=payload.allow_local_fallback,
+        )
+
+    @app.get("/api/gateway/fusion/roles")
+    async def gateway_specialist_roles(objective: str = "Analyze and verify", mode: str = "frontier_fusion") -> dict[str, Any]:
+        return engine.platform.hybrid_cloud.fusion.assign_specialist_roles(objective, mode=mode)
+
     return app
 
 
-# `nova.main:app` is the ASGI entry point used by uvicorn, the Dockerfile, and
-# app.py on Hugging Face Spaces. It is built lazily (PEP 562) so that merely
-# importing this module — as the test suite and tooling do — never creates
-# storage directories or applies environment-dependent fail-closed checks.
+# `nova.main:app` is the local companion ASGI entry point used by uvicorn, the
+# containerized dev sandbox, and app.py on 127.0.0.1 loopback. It is built lazily
+# (PEP 562) so that merely importing this module — as the test suite and tooling
+# do — never creates storage directories or applies environment-dependent checks.
 _default_app: FastAPI | None = None
 
 
