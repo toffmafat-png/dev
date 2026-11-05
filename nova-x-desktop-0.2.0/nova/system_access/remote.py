@@ -138,7 +138,7 @@ class ServerRegistryAndAdmin:
         clean = hostname.strip("[]")
         return clean if int(port) == 22 else f"[{clean}]:{int(port)}"
 
-    def scan_server_host_key(self, hostname: str, port: int = 22, *, timeout: float = 5.0) -> dict[str, Any]:
+    def scan_server_host_key(self, hostname: str, port: int = 22, *, timeout: float = 5.0, key_types: str = "ed25519,ecdsa,rsa") -> dict[str, Any]:
         """Probe a server's current public host key via `ssh-keyscan` for operator verification."""
         if not _SAFE_HOST_RE.match(hostname):
             return {"ok": False, "reason": "Invalid hostname."}
@@ -146,7 +146,7 @@ class ServerRegistryAndAdmin:
         if not Path(keyscan).exists():
             return {"ok": False, "reason": "`ssh-keyscan` is not installed."}
         proc = subprocess.run(
-            [keyscan, "-T", str(max(1, int(timeout))), "-p", str(int(port)), hostname.strip("[]")],
+            [keyscan, "-t", key_types, "-T", str(max(1, int(timeout))), "-p", str(int(port)), hostname.strip("[]")],
             capture_output=True,
             text=True,
             timeout=timeout + 2.0,
@@ -262,7 +262,9 @@ class ServerRegistryAndAdmin:
 
     def verify_pinned_host_identity(self, srv: dict[str, Any]) -> dict[str, Any]:
         """Verify live server SSH host key matches pinned fingerprint; reject unexpected identity."""
-        live = self.scan_server_host_key(srv["hostname"], srv["port"], timeout=4.0)
+        kh_entry = str((srv.get("metadata") or {}).get("known_hosts_entry") or "")
+        ktype = "ed25519" if "ssh-ed25519" in kh_entry else ("ecdsa" if "ecdsa-" in kh_entry else ("rsa" if "ssh-rsa" in kh_entry else "ed25519,ecdsa,rsa"))
+        live = self.scan_server_host_key(srv["hostname"], srv["port"], timeout=4.0, key_types=ktype)
         if not live.get("ok"):
             return {"ok": False, "status": "unreachable", "reason": live.get("reason", "Connection failed")}
         if live["fingerprint"] != srv["host_key_fingerprint"]:

@@ -96,6 +96,9 @@ def ephemeral_openssh_server(work_dir: Path) -> Iterator[dict[str, Any] | None]:
 
     def _write_cfg(active_host_key: Path) -> None:
         cfg_file.write_text(
+            "IgnoreUnknown PerSourcePenalties\n"
+            "PerSourcePenalties no\n"
+            "MaxStartups 100:30:200\n"
             f"Port {port}\n"
             "ListenAddress 127.0.0.1\n"
             f"HostKey {active_host_key}\n"
