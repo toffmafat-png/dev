@@ -103,7 +103,6 @@ def ephemeral_openssh_server(work_dir: Path) -> Iterator[dict[str, Any] | None]:
             f"PidFile {pid_file}\n"
             "PasswordAuthentication no\n"
             "KbdInteractiveAuthentication no\n"
-            "ChallengeResponseAuthentication no\n"
             "PubkeyAuthentication yes\n"
             "UsePAM no\n"
             "StrictModes no\n"
@@ -113,18 +112,10 @@ def ephemeral_openssh_server(work_dir: Path) -> Iterator[dict[str, Any] | None]:
             encoding="utf-8",
         )
 
-    _write_cfg(host_key)
-    proc = subprocess.Popen(
-        [sshd_bin, "-D", "-e", "-f", str(cfg_file)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    def _wait_listening(target_port: int, timeout_s: float = 5.0) -> bool:
+    def _wait_listening(daemon_proc: subprocess.Popen[str], target_port: int, timeout_s: float = 5.0) -> bool:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            if proc.poll() is not None:
+            if daemon_proc.poll() is not None:
                 return False
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.settimeout(0.2)
@@ -133,9 +124,73 @@ def ephemeral_openssh_server(work_dir: Path) -> Iterator[dict[str, Any] | None]:
             time.sleep(0.05)
         return False
 
+    def _probe_ssh_session(target_port: int) -> bool:
+        ssh_client = shutil.which("ssh") or "/usr/bin/ssh"
+        if not Path(ssh_client).is_file():
+            return False
+        res = subprocess.run(
+            [
+                ssh_client,
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "GlobalKnownHostsFile=/dev/null",
+                "-o", "IdentitiesOnly=yes",
+                "-o", "ConnectTimeout=3",
+                "-i", str(client_key),
+                "-p", str(target_port),
+                f"{current_user}@127.0.0.1",
+                "echo NOVA_SSH_READY",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=6,
+            check=False,
+        )
+        return res.returncode == 0 and "NOVA_SSH_READY" in (res.stdout or "")
+
+    def _stop_proc(daemon_proc: subprocess.Popen[str] | None) -> None:
+        if daemon_proc is None or daemon_proc.poll() is not None:
+            return
+        daemon_proc.terminate()
+        try:
+            daemon_proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            daemon_proc.kill()
+
+    _write_cfg(host_key)
+    active_sshd_exec = sshd_bin
+    proc: subprocess.Popen[str] | None = None
+
+    # Try system sshd first; if AppArmor confines `/usr/sbin/sshd` against temp keys (Ubuntu 26+),
+    # fall back to an unconfined user-owned binary copy in `ssh_root`.
+    candidate_bins = [sshd_bin]
+    local_sshd_copy = ssh_root / "sshd_unconfined"
     try:
-        if not _wait_listening(port):
-            proc.terminate()
+        shutil.copy2(sshd_bin, local_sshd_copy)
+        os.chmod(local_sshd_copy, 0o755)
+        candidate_bins.append(str(local_sshd_copy))
+    except OSError:
+        pass
+
+    session_ready = False
+    for cand_bin in candidate_bins:
+        proc = subprocess.Popen(
+            [cand_bin, "-D", "-e", "-f", str(cfg_file)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if _wait_listening(proc, port) and _probe_ssh_session(port):
+            active_sshd_exec = cand_bin
+            session_ready = True
+            break
+        _stop_proc(proc)
+        proc = None
+
+    try:
+        if not session_ready or proc is None:
+            _stop_proc(proc)
             yield None
             return
 
@@ -143,19 +198,15 @@ def ephemeral_openssh_server(work_dir: Path) -> Iterator[dict[str, Any] | None]:
 
         def rotate_host_key() -> None:
             nonlocal proc
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            _stop_proc(proc)
             _write_cfg(host_key_alt)
             proc = subprocess.Popen(
-                [sshd_bin, "-D", "-e", "-f", str(cfg_file)],
+                [active_sshd_exec, "-D", "-e", "-f", str(cfg_file)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            _wait_listening(port)
+            _wait_listening(proc, port)
 
         yield {
             "hostname": "127.0.0.1",
@@ -168,11 +219,7 @@ def ephemeral_openssh_server(work_dir: Path) -> Iterator[dict[str, Any] | None]:
             "rotate_host_key": rotate_host_key,
         }
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        _stop_proc(proc)
 
 
 def _make_service(root: Path) -> SystemAccessService:
@@ -801,6 +848,10 @@ def run_system_access_acceptance() -> dict[str, Any]:
 def main() -> int:
     report = run_system_access_acceptance()
     print(json.dumps(report, indent=2))
+    if not report["all_passed"]:
+        for chk in report["checks"]:
+            if chk["status"] == "failed":
+                print(f"::error::§164 Check #{chk['number']} ({chk['name']}) failed: {chk['detail']}", file=sys.stderr)
     return 0 if report["all_passed"] else 1
 
 

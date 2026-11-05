@@ -883,8 +883,20 @@ class DriverIntelligenceEngine:
         findings: list[dict[str, Any]] = []
         candidate_repairs: list[dict[str, Any]] = []
 
+        target_dtype = str(target_dev.get("device_type") or "").lower() if target_dev else ""
+        compatible_classes = (
+            {target_dtype, "network"}
+            if target_dtype in {"wireless", "network"}
+            else ({target_dtype} if target_dtype else set())
+        )
+        relevant_firmware = [
+            fw
+            for fw in kprobe["missing_firmware"]
+            if extra_logs or not compatible_classes or fw["device_class"] in compatible_classes
+        ]
+
         # Evidence check 1: Missing firmware blobs in kernel ring buffer / collected logs
-        for fw in kprobe["missing_firmware"]:
+        for fw in relevant_firmware:
             pkg = fw["candidate_package"]
             pkg_available = self._check_apt_package_known(pkg) if pkg else False
             findings.append(
@@ -939,7 +951,7 @@ class DriverIntelligenceEngine:
                         "rationale": f"Device `{target_dev['device_id']}` has no bound driver and module `{expected_mod}` is not bound.",
                     }
                 )
-            elif drv and not kprobe["missing_firmware"] and not kprobe["driver_init_errors"]:
+            elif drv and not relevant_firmware and not kprobe["driver_init_errors"]:
                 findings.append(
                     {
                         "kind": "driver_bound_check_userspace_or_permissions",
