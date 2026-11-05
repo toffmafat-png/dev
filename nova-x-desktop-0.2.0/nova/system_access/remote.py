@@ -15,6 +15,7 @@ import hmac
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import uuid
@@ -490,13 +491,61 @@ class ServerRegistryAndAdmin:
 
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_sec + 5, check=False)
         ok = proc.returncode == 0
-        err_clean = self.redactor.scrub_text((proc.stderr or "").strip(), max_chars=500)
+        err_text = (proc.stderr or "").strip()
+        exit_code = proc.returncode
+
+        # Fallback 1: Legacy SCP protocol (`scp -O`) when SFTP subsystem is absent/restricted
+        if not ok:
+            argv_legacy = [scp_bin, "-O", *argv[1:]]
+            proc_leg = subprocess.run(argv_legacy, capture_output=True, text=True, timeout=timeout_sec + 5, check=False)
+            if proc_leg.returncode == 0:
+                ok = True
+                exit_code = 0
+                err_text = ""
+
+        # Fallback 2: Authenticated binary SSH stream (`StrictHostKeyChecking=yes` + pinned `UserKnownHostsFile`)
+        # for minimal/AppArmor-confined hosts where `internal-sftp` cannot access the target path directly.
+        if not ok:
+            ssh_bin = shutil.which("ssh") or "/usr/bin/ssh"
+            ssh_opts = self._build_ssh_base_args(srv, timeout_sec=timeout_sec, for_scp_sftp=False)
+            quoted_remote = shlex.quote(remote_path)
+            if direction == "upload":
+                raw_in = lp.read_bytes()
+                sproc = subprocess.run(
+                    [ssh_bin, *ssh_opts, f"{srv['username']}@{srv['hostname']}", f"cat > {quoted_remote}"],
+                    input=raw_in,
+                    capture_output=True,
+                    timeout=timeout_sec + 5,
+                    check=False,
+                )
+                if sproc.returncode == 0:
+                    ok = True
+                    exit_code = 0
+                    err_text = ""
+                else:
+                    err_text = err_text or sproc.stderr.decode("utf-8", errors="replace").strip()
+            else:
+                sproc = subprocess.run(
+                    [ssh_bin, *ssh_opts, f"{srv['username']}@{srv['hostname']}", f"cat < {quoted_remote}"],
+                    capture_output=True,
+                    timeout=timeout_sec + 5,
+                    check=False,
+                )
+                if sproc.returncode == 0:
+                    lp.write_bytes(sproc.stdout)
+                    ok = True
+                    exit_code = 0
+                    err_text = ""
+                else:
+                    err_text = err_text or sproc.stderr.decode("utf-8", errors="replace").strip()
+
+        err_clean = self.redactor.scrub_text(err_text, max_chars=500)
         run_rec = self.db.add_remote_task_run(
             {
                 "server_id": srv["id"],
                 "operation": f"scp.{direction}",
                 "command_summary": f"{direction} {lp.name} <-> {remote_path}",
-                "exit_code": proc.returncode,
+                "exit_code": exit_code,
                 "status": "succeeded" if ok else "failed",
                 "output_excerpt": f"bytes={lp.stat().st_size}" if (ok and lp.exists()) else "",
                 "error_excerpt": err_clean,

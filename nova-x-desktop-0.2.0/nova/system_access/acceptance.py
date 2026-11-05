@@ -162,9 +162,10 @@ def ephemeral_openssh_server(work_dir: Path) -> Iterator[dict[str, Any] | None]:
     active_sshd_exec = sshd_bin
     proc: subprocess.Popen[str] | None = None
 
-    # Try system sshd first; if AppArmor confines `/usr/sbin/sshd` against temp keys (Ubuntu 26+),
-    # fall back to an unconfined user-owned binary copy in `ssh_root`.
-    candidate_bins = [sshd_bin]
+    # Prefer an unconfined user-owned binary copy in `ssh_root` first so Ubuntu 26+ AppArmor
+    # `/etc/apparmor.d/sshd` does not block `internal-sftp` from writing to temp workspaces;
+    # fall back to system `sshd_bin` if copying is disallowed.
+    candidate_bins: list[str] = []
     local_sshd_copy = ssh_root / "sshd_unconfined"
     try:
         shutil.copy2(sshd_bin, local_sshd_copy)
@@ -172,6 +173,7 @@ def ephemeral_openssh_server(work_dir: Path) -> Iterator[dict[str, Any] | None]:
         candidate_bins.append(str(local_sshd_copy))
     except OSError:
         pass
+    candidate_bins.append(sshd_bin)
 
     session_ready = False
     for cand_bin in candidate_bins:
@@ -634,7 +636,7 @@ def run_system_access_acceptance() -> dict[str, Any]:
 
                     up = svc.servers.transfer_file("local-staging", local_path=str(src_file), remote_path=remote_target, direction="upload")
                     down = svc.servers.transfer_file("local-staging", local_path=str(dl_file), remote_path=remote_target, direction="download")
-                    assert up["ok"] is True and down["ok"] is True
+                    assert up["ok"] is True and down["ok"] is True, f"up={up} down={down}"
                     actual_sha = hashlib.sha256(dl_file.read_bytes()).hexdigest()
                     assert actual_sha == expected_sha
                     outcomes.append(
