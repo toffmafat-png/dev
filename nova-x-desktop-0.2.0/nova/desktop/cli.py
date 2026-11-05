@@ -82,6 +82,13 @@ def _parser() -> argparse.ArgumentParser:
     ci_cmd.add_argument("--invent-tool", default="", help="Run §265 12-step security utility invention by name")
     ci_cmd.add_argument("--benchmark", action="store_true", help="Run §272 12-metric cybersecurity benchmark suite (default split)")
     ci_cmd.add_argument("--held-out", action="store_true", help="Run §272 held-out cybersecurity benchmark split")
+    se_cmd = subparsers.add_parser("self-eng", help="Autonomous Architecture, Source Code Evolution & Self-Engineering Engine (§276–§295)")
+    se_cmd.add_argument("--inspect", action="store_true", help="Inspect DEV's live repository across 20 architectural domains (§277)")
+    se_cmd.add_argument("--architecture", action="store_true", help="Run 16-dimension live architectural analysis (§278)")
+    se_cmd.add_argument("--dependencies", action="store_true", help="Run 10-dimension dependency audit & SBOM generation (§291)")
+    se_cmd.add_argument("--roadmap", action="store_true", help="Refresh metric-backed continuous improvement roadmap (§292)")
+    se_cmd.add_argument("--objective", default="", help="Execute 14-step Autonomous Engineering Assistant objective (§290)")
+    se_cmd.add_argument("--recover", action="store_true", help="Run standalone recovery launcher verification (§288)")
     worker = subparsers.add_parser("worker", help="Run optional user-level background goal/task worker")
     worker.add_argument("--once", action="store_true", help="Run one scheduled-goal check tick and exit")
     worker.add_argument("--poll-seconds", type=int, default=15, help="Polling interval in seconds (5–300)")
@@ -494,6 +501,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(ci.benchmarks.run_suite(split=split, save_as_baseline=False), indent=2, default=str))
                 return 0
             print(json.dumps(ci.status_summary(), indent=2, default=str))
+            return 0
+        finally:
+            runtime.close()
+    if args.action == "self-eng":
+        runtime = DesktopRuntime()
+        try:
+            se = runtime.self_engineering
+            if args.inspect:
+                print(json.dumps(se.source_intel.inspect_complete_repository()["summary_counts"], indent=2, default=str))
+                return 0
+            if args.architecture:
+                print(json.dumps(se.arch_analyzer.analyze_architecture(), indent=2, default=str))
+                return 0
+            if args.dependencies:
+                print(json.dumps(se.dep_intel.audit_dependencies(), indent=2, default=str))
+                return 0
+            if args.roadmap:
+                print(json.dumps(se.roadmap_engine.refresh_prioritized_roadmap(), indent=2, default=str))
+                return 0
+            if args.objective:
+                print(
+                    json.dumps(
+                        se.engineering_assistant.execute_engineering_objective(objective=args.objective),
+                        indent=2,
+                        default=str,
+                    )
+                )
+                return 0
+            if args.recover:
+                print(json.dumps(se.run_recovery_launcher(), indent=2, default=str))
+                return 0
+            print(json.dumps(se.status_summary(), indent=2, default=str))
             return 0
         finally:
             runtime.close()

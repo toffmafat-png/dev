@@ -121,6 +121,9 @@ jobs:
       - name: Next-Generation Autonomous Cyber Intelligence Acceptance (§261-§275)
         run: python -m nova.cyber_intelligence.acceptance
 
+      - name: Autonomous Architecture & Self-Engineering Acceptance (§276-§295)
+        run: python -m nova.self_engineering.acceptance
+
       - name: Pytest (full suite)
         run: python -m pytest -q
 
