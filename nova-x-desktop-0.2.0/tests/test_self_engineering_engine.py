@@ -214,6 +214,24 @@ def test_http_api_cli_and_tool_registry_integration(tmp_path: Path, monkeypatch,
 
 
 def test_full_20_check_acceptance_suite() -> None:
+    from nova.sandbox import Sandbox, SandboxPolicy
+
+    # Regression check: bubblewrap preserves read-only /tmp entrypoints (e.g. pytest tmp_path)
+    # by moving scratch tmpfs to /var/tmp while keeping non-/tmp runs on --tmpfs /tmp.
+    normal_cmd = Sandbox._bwrap_argv(
+        ["python3", "/opt/nova/plugin_main.py"],
+        SandboxPolicy(writable_roots=("/home/user/ws",)),
+    )
+    assert normal_cmd[normal_cmd.index("--tmpfs") : normal_cmd.index("--tmpfs") + 2] == ["--tmpfs", "/tmp"]
+
+    tmp_cmd = Sandbox._bwrap_argv(
+        ["python3", "/tmp/pytest-of-runner/cand/test_candidate.py"],
+        SandboxPolicy(writable_roots=("/tmp/pytest-of-runner/cand/scratch",)),
+    )
+    assert "--ro-bind" in tmp_cmd
+    for idx in range(len(tmp_cmd) - 1):
+        assert not (tmp_cmd[idx] == "--tmpfs" and tmp_cmd[idx + 1] == "/tmp")
+
     summary = run_self_engineering_acceptance_suite()
     assert summary["ok"] is True
     assert summary["only_actually_executed_tests_reported"] is True
