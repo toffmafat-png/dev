@@ -575,13 +575,37 @@ class Sandbox:
 
     @staticmethod
     def _bwrap_argv(argv: list[str], policy: SandboxPolicy) -> list[str]:
-        """Build a bubblewrap command line. Fixed structure, validated paths only."""
+        """Build a bubblewrap command line. Fixed structure, validated paths only.
+
+        Mirrors ``nova.sandbox_child``: when ``argv``, ``cwd`` or a writable root
+        already lives under ``/tmp`` (for example pytest ``tmp_path``), mounting a
+        fresh tmpfs over ``/tmp`` would hide the entrypoint or staged inputs. In
+        that case ``/tmp`` is bound read-only and isolated scratch tmpfs moves to
+        ``/var/tmp``, with only explicitly granted ``writable_roots`` bound rw.
+        """
+        referenced = [*argv, *policy.writable_roots, policy.cwd]
+        uses_tmp = any(item == "/tmp" or item.startswith("/tmp/") for item in referenced if item)
+        uses_var_tmp = any(item == "/var/tmp" or item.startswith("/var/tmp/") for item in referenced if item)
+
         launcher = [
             "bwrap",
             "--ro-bind", "/", "/",
             "--dev", "/dev",
             "--proc", "/proc",
-            "--tmpfs", "/tmp",
+        ]
+        if not uses_tmp:
+            launcher += ["--tmpfs", "/tmp"]
+            scratch_target = "/tmp"
+        else:
+            if os.path.isdir("/tmp"):
+                launcher += ["--ro-bind", "/tmp", "/tmp"]
+            if not uses_var_tmp and os.path.isdir("/var/tmp"):
+                launcher += ["--tmpfs", "/var/tmp"]
+                scratch_target = "/var/tmp"
+            else:
+                scratch_target = policy.writable_roots[0] if policy.writable_roots else "/tmp"
+
+        launcher += [
             "--die-with-parent",
             "--new-session",
             "--clearenv",
@@ -590,11 +614,14 @@ class Sandbox:
             value = os.environ.get(name)
             if value is not None:
                 launcher += ["--setenv", name, value]
+        launcher += ["--setenv", "TMPDIR", scratch_target]
         for path in policy.writable_roots:
             launcher += ["--bind", path, path]
         for path in policy.hidden_paths:
             if os.path.isdir(path):
                 launcher += ["--tmpfs", path]
+            elif os.path.isfile(path):
+                launcher += ["--ro-bind", "/dev/null", path]
         launcher.append("--share-net" if policy.network else "--unshare-net")
         return [*launcher, "--", *argv]
 

@@ -1345,6 +1345,90 @@ class Database:
                     summary TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS self_eng_adrs (
+                    adr_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'accepted',
+                    context TEXT NOT NULL DEFAULT '',
+                    decision TEXT NOT NULL DEFAULT '',
+                    benefits_vs_costs_json TEXT NOT NULL DEFAULT '{}',
+                    affected_modules_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS self_eng_change_sets (
+                    change_id TEXT PRIMARY KEY,
+                    objective TEXT NOT NULL,
+                    channel TEXT NOT NULL DEFAULT 'experimental',
+                    governance_zone TEXT NOT NULL DEFAULT 'experimental_code',
+                    status TEXT NOT NULL DEFAULT 'staged',
+                    modified_files_json TEXT NOT NULL DEFAULT '[]',
+                    impact_json TEXT NOT NULL DEFAULT '{}',
+                    verification_json TEXT NOT NULL DEFAULT '{}',
+                    backup_id TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS self_eng_dynamic_modules (
+                    module_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'registered',
+                    manifest_json TEXT NOT NULL DEFAULT '{}',
+                    source_path TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS self_eng_db_migrations (
+                    migration_id TEXT PRIMARY KEY,
+                    version INTEGER NOT NULL,
+                    description TEXT NOT NULL,
+                    sql_statement TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'verified_on_copy',
+                    backup_path TEXT NOT NULL DEFAULT '',
+                    verification_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS self_eng_releases (
+                    release_id TEXT PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    changelog TEXT NOT NULL DEFAULT '',
+                    package_path TEXT NOT NULL DEFAULT '',
+                    manifest_sha256 TEXT NOT NULL DEFAULT '',
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS self_eng_test_runs (
+                    run_id TEXT PRIMARY KEY,
+                    suite_kind TEXT NOT NULL,
+                    target_version TEXT NOT NULL DEFAULT 'candidate',
+                    passed INTEGER NOT NULL DEFAULT 0,
+                    exit_code INTEGER NOT NULL DEFAULT 0,
+                    output_excerpt TEXT NOT NULL DEFAULT '',
+                    metrics_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS self_eng_repair_incidents (
+                    incident_id TEXT PRIMARY KEY,
+                    component TEXT NOT NULL,
+                    affected_layer TEXT NOT NULL,
+                    attempt_number INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'resolved',
+                    cause TEXT NOT NULL DEFAULT '',
+                    resolution_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS self_eng_roadmap_items (
+                    item_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    priority_score REAL NOT NULL DEFAULT 0.0,
+                    measurable_metric TEXT NOT NULL DEFAULT '',
+                    acceptance_criteria TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'proposed',
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -7040,6 +7124,345 @@ class Database:
             d["affected_packages"] = json.loads(d.pop("affected_packages_json") or "[]")
             out.append(d)
         return out
+
+    # ------------------------------------------------------------------
+    # §276–§295 Autonomous Architecture, Source Code Evolution & Self-Engineering
+    # ------------------------------------------------------------------
+
+    def save_self_eng_adr(self, item: dict[str, Any]) -> dict[str, Any]:
+        aid = str(item.get("adr_id") or f"adr-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO self_eng_adrs (
+                    adr_id, title, status, context, decision, benefits_vs_costs_json, affected_modules_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    aid,
+                    str(item.get("title") or "")[:240],
+                    str(item.get("status") or "accepted")[:40],
+                    str(item.get("context") or "")[:2000],
+                    str(item.get("decision") or "")[:2000],
+                    json.dumps(item.get("benefits_vs_costs") or {}),
+                    json.dumps(item.get("affected_modules") or []),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM self_eng_adrs WHERE adr_id = ?", (aid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["benefits_vs_costs"] = json.loads(d.pop("benefits_vs_costs_json") or "{}")
+        d["affected_modules"] = json.loads(d.pop("affected_modules_json") or "[]")
+        return d
+
+    def list_self_eng_adrs(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM self_eng_adrs ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["benefits_vs_costs"] = json.loads(d.pop("benefits_vs_costs_json") or "{}")
+            d["affected_modules"] = json.loads(d.pop("affected_modules_json") or "[]")
+            out.append(d)
+        return out
+
+    def upsert_self_eng_change_set(self, item: dict[str, Any]) -> dict[str, Any]:
+        cid = str(item.get("change_id") or f"chg-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            existing = conn.execute("SELECT created_at FROM self_eng_change_sets WHERE change_id = ?", (cid,)).fetchone()
+            created_at = str(existing["created_at"]) if existing else now
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO self_eng_change_sets (
+                    change_id, objective, channel, governance_zone, status,
+                    modified_files_json, impact_json, verification_json, backup_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cid,
+                    str(item.get("objective") or "")[:800],
+                    str(item.get("channel") or "experimental")[:30],
+                    str(item.get("governance_zone") or "experimental_code")[:60],
+                    str(item.get("status") or "staged")[:40],
+                    json.dumps(item.get("modified_files") or []),
+                    json.dumps(item.get("impact") or {}),
+                    json.dumps(item.get("verification") or {}),
+                    str(item.get("backup_id") or "")[:80],
+                    created_at,
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM self_eng_change_sets WHERE change_id = ?", (cid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["modified_files"] = json.loads(d.pop("modified_files_json") or "[]")
+        d["impact"] = json.loads(d.pop("impact_json") or "{}")
+        d["verification"] = json.loads(d.pop("verification_json") or "{}")
+        return d
+
+    def list_self_eng_change_sets(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM self_eng_change_sets ORDER BY updated_at DESC LIMIT ?",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["modified_files"] = json.loads(d.pop("modified_files_json") or "[]")
+            d["impact"] = json.loads(d.pop("impact_json") or "{}")
+            d["verification"] = json.loads(d.pop("verification_json") or "{}")
+            out.append(d)
+        return out
+
+    def upsert_self_eng_dynamic_module(self, item: dict[str, Any]) -> dict[str, Any]:
+        mid = str(item.get("module_id") or f"dmod-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            existing = conn.execute("SELECT created_at FROM self_eng_dynamic_modules WHERE module_id = ?", (mid,)).fetchone()
+            created_at = str(existing["created_at"]) if existing else now
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO self_eng_dynamic_modules (
+                    module_id, name, version, status, manifest_json, source_path, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mid,
+                    str(item.get("name") or mid)[:120],
+                    str(item.get("version") or "1.0.0")[:40],
+                    str(item.get("status") or "registered")[:40],
+                    json.dumps(item.get("manifest") or {}),
+                    str(item.get("source_path") or "")[:400],
+                    created_at,
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM self_eng_dynamic_modules WHERE module_id = ?", (mid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["manifest"] = json.loads(d.pop("manifest_json") or "{}")
+        return d
+
+    def list_self_eng_dynamic_modules(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM self_eng_dynamic_modules ORDER BY updated_at DESC").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["manifest"] = json.loads(d.pop("manifest_json") or "{}")
+            out.append(d)
+        return out
+
+    def save_self_eng_db_migration(self, item: dict[str, Any]) -> dict[str, Any]:
+        mid = str(item.get("migration_id") or f"dbmig-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO self_eng_db_migrations (
+                    migration_id, version, description, sql_statement, status, backup_path, verification_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mid,
+                    int(item.get("version") or 1),
+                    str(item.get("description") or "")[:300],
+                    str(item.get("sql_statement") or "")[:4000],
+                    str(item.get("status") or "verified_on_copy")[:40],
+                    str(item.get("backup_path") or "")[:400],
+                    json.dumps(item.get("verification") or {}),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM self_eng_db_migrations WHERE migration_id = ?", (mid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["verification"] = json.loads(d.pop("verification_json") or "{}")
+        return d
+
+    def list_self_eng_db_migrations(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM self_eng_db_migrations ORDER BY version DESC, created_at DESC").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["verification"] = json.loads(d.pop("verification_json") or "{}")
+            out.append(d)
+        return out
+
+    def save_self_eng_release(self, item: dict[str, Any]) -> dict[str, Any]:
+        rid = str(item.get("release_id") or f"rel-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO self_eng_releases (
+                    release_id, version, channel, status, changelog, package_path, manifest_sha256, details_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rid,
+                    str(item.get("version") or "0.2.0")[:40],
+                    str(item.get("channel") or "experimental")[:30],
+                    str(item.get("status") or "active")[:40],
+                    str(item.get("changelog") or "")[:4000],
+                    str(item.get("package_path") or "")[:400],
+                    str(item.get("manifest_sha256") or "")[:128],
+                    json.dumps(item.get("details") or {}),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM self_eng_releases WHERE release_id = ?", (rid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["details"] = json.loads(d.pop("details_json") or "{}")
+        return d
+
+    def list_self_eng_releases(self, *, channel: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if channel:
+            clauses.append("channel = ?")
+            params.append(channel)
+        sql = f"SELECT * FROM self_eng_releases WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["details"] = json.loads(d.pop("details_json") or "{}")
+            out.append(d)
+        return out
+
+    def save_self_eng_test_run(self, item: dict[str, Any]) -> dict[str, Any]:
+        rid = str(item.get("run_id") or f"qatrun-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO self_eng_test_runs (
+                    run_id, suite_kind, target_version, passed, exit_code, output_excerpt, metrics_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rid,
+                    str(item.get("suite_kind") or "unit_testing")[:60],
+                    str(item.get("target_version") or "candidate")[:60],
+                    1 if item.get("passed") else 0,
+                    int(item.get("exit_code") or 0),
+                    str(item.get("output_excerpt") or "")[:4000],
+                    json.dumps(item.get("metrics") or {}),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM self_eng_test_runs WHERE run_id = ?", (rid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["passed"] = bool(d["passed"])
+        d["metrics"] = json.loads(d.pop("metrics_json") or "{}")
+        return d
+
+    def list_self_eng_test_runs(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM self_eng_test_runs ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["passed"] = bool(d["passed"])
+            d["metrics"] = json.loads(d.pop("metrics_json") or "{}")
+            out.append(d)
+        return out
+
+    def save_self_eng_repair_incident(self, item: dict[str, Any]) -> dict[str, Any]:
+        iid = str(item.get("incident_id") or f"rep-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO self_eng_repair_incidents (
+                    incident_id, component, affected_layer, attempt_number, status, cause, resolution_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    iid,
+                    str(item.get("component") or "unknown")[:120],
+                    str(item.get("affected_layer") or "core_engine")[:40],
+                    int(item.get("attempt_number") or 1),
+                    str(item.get("status") or "resolved")[:40],
+                    str(item.get("cause") or "")[:500],
+                    json.dumps(item.get("resolution") or {}),
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM self_eng_repair_incidents WHERE incident_id = ?", (iid,)).fetchone()
+        if r is None:
+            return {}
+        d = dict(r)
+        d["resolution"] = json.loads(d.pop("resolution_json") or "{}")
+        return d
+
+    def list_self_eng_repair_incidents(self, *, component: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if component:
+            clauses.append("component = ?")
+            params.append(component)
+        sql = f"SELECT * FROM self_eng_repair_incidents WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["resolution"] = json.loads(d.pop("resolution_json") or "{}")
+            out.append(d)
+        return out
+
+    def save_self_eng_roadmap_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        rid = str(item.get("item_id") or f"rmap-{uuid.uuid4().hex[:10]}")[:80]
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO self_eng_roadmap_items (
+                    item_id, title, category, priority_score, measurable_metric, acceptance_criteria, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rid,
+                    str(item.get("title") or "")[:240],
+                    str(item.get("category") or "architecture")[:60],
+                    float(item.get("priority_score") or 0.0),
+                    str(item.get("measurable_metric") or "")[:240],
+                    str(item.get("acceptance_criteria") or "")[:400],
+                    str(item.get("status") or "proposed")[:40],
+                    now,
+                ),
+            )
+            r = conn.execute("SELECT * FROM self_eng_roadmap_items WHERE item_id = ?", (rid,)).fetchone()
+        return dict(r) if r else {}
+
+    def list_self_eng_roadmap_items(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM self_eng_roadmap_items ORDER BY priority_score DESC, created_at DESC").fetchall()
+        return [dict(r) for r in rows]
 
 
 

@@ -873,6 +873,37 @@ class CyberIntelBenchmarkApiRequest(BaseModel):
     save_as_baseline: bool = False
 
 
+def _self_engineering_health(app_state: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "enabled": True,
+        "sections_covered": "276-295",
+        "source_intel_domains": 20,
+        "architecture_dimensions": 16,
+        "degraded": True,
+        "detail": "/api/self-engineering/status",
+    }
+    try:
+        platform_svc = getattr(app_state, "platform", None) or getattr(getattr(app_state, "engine", None), "platform", None)
+        se = getattr(platform_svc, "self_engineering", None) if platform_svc is not None else None
+        if se is None:
+            return base
+        base.update(se.status_summary())
+        base["degraded"] = False
+    except Exception:
+        base["degraded"] = True
+    return base
+
+
+class SelfEngObjectiveApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    objective: str = Field(min_length=4, max_length=1500)
+
+
+class SelfEngImpactApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    module_name: str = Field(min_length=2, max_length=200)
+
+
 class CyberIntelFrontierIngestApiRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     updates: list[dict[str, Any]] = Field(min_length=1, max_length=50)
@@ -1335,6 +1366,7 @@ def create_app(
             "general_intelligence": _general_intelligence_health(app.state),
             "personal_policy": _personal_policy_health(app.state),
             "cyber_intelligence": _cyber_intelligence_health(app.state),
+            "self_engineering": _self_engineering_health(app.state),
         }
 
     @app.get("/api/setup")
@@ -3278,6 +3310,40 @@ def create_app(
             return engine.platform.cyber_intelligence.knowledge_frontier.ingest_frontier_updates(payload.updates)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/self-engineering/status")
+    async def self_engineering_status() -> dict[str, Any]:
+        return engine.platform.self_engineering.status_summary()
+
+    @app.get("/api/self-engineering/inspect")
+    async def self_engineering_inspect() -> dict[str, Any]:
+        return await asyncio.to_thread(engine.platform.self_engineering.source_intel.inspect_complete_repository)
+
+    @app.get("/api/self-engineering/architecture")
+    async def self_engineering_architecture() -> dict[str, Any]:
+        return await asyncio.to_thread(engine.platform.self_engineering.arch_analyzer.analyze_architecture)
+
+    @app.post("/api/self-engineering/impact")
+    async def self_engineering_impact(payload: SelfEngImpactApiRequest) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.self_engineering.knowledge_graph.estimate_change_impact,
+            payload.module_name,
+        )
+
+    @app.get("/api/self-engineering/dependencies")
+    async def self_engineering_dependencies() -> dict[str, Any]:
+        return await asyncio.to_thread(engine.platform.self_engineering.dep_intel.audit_dependencies)
+
+    @app.get("/api/self-engineering/roadmap")
+    async def self_engineering_roadmap() -> dict[str, Any]:
+        return await asyncio.to_thread(engine.platform.self_engineering.roadmap_engine.refresh_prioritized_roadmap)
+
+    @app.post("/api/self-engineering/objective")
+    async def self_engineering_objective(payload: SelfEngObjectiveApiRequest) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            engine.platform.self_engineering.engineering_assistant.execute_engineering_objective,
+            objective=payload.objective,
+        )
 
     return app
 

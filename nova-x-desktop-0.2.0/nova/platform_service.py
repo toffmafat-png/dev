@@ -45,6 +45,7 @@ from nova.plugins import PluginManager, builtin_sdk_examples
 from nova.privacy_intel.service import PrivacyIntelligenceService
 from nova.resources import ResourceManager
 from nova.sandbox import Sandbox
+from nova.self_engineering.service import SelfEngineeringService
 from nova.self_improvement import ControlledImprovementEngine
 from nova.system_access.service import SystemAccessService
 from nova.terminal import TerminalWorkspace
@@ -57,6 +58,7 @@ from nova.tools.kali_intel import build_kali_intel_tools
 from nova.tools.personal_policy import build_personal_policy_tools
 from nova.tools.privacy_intel import build_privacy_intel_tools
 from nova.tools.registry import ToolRegistry
+from nova.tools.self_engineering import build_self_engineering_tools
 from nova.tools.system_access import build_system_access_tools
 from nova.unified_os import UnifiedOperatingKernel
 from nova.updates import MODE_ONLINE, MODE_PROVIDER_UNAVAILABLE, OfflineCoordinator, UpdateManager
@@ -117,6 +119,7 @@ class PlatformService:
     general_intelligence: GeneralIntelligenceService = field(init=False)
     personal_policy: PersonalSecurityAndAutonomyService = field(init=False)
     cyber_intelligence: NextGenCyberIntelligenceService = field(init=False)
+    self_engineering: SelfEngineeringService = field(init=False)
 
     def __post_init__(self) -> None:
         data_dir = Path(self.settings.data_dir)
@@ -391,6 +394,14 @@ class PlatformService:
         for ci_tool in build_cyber_intelligence_tools(lambda: self.cyber_intelligence):
             if self.tools.get(ci_tool.name) is None:
                 self.tools.register(ci_tool)
+        self.self_engineering = SelfEngineeringService(
+            db=self.db,
+            data_dir=data_dir,
+            resource_manager=self.resources,
+        )
+        for se_tool in build_self_engineering_tools(lambda: self.self_engineering):
+            if self.tools.get(se_tool.name) is None:
+                self.tools.register(se_tool)
 
     def _register_baseline_integrations(self) -> None:
         self.gateway.register(
@@ -471,6 +482,7 @@ class PlatformService:
             },
             "personal_policy": self.personal_policy.status_summary(),
             "cyber_intelligence": self.cyber_intelligence.status_summary(),
+            "self_engineering": self.self_engineering.status_summary(),
             "recommendations": [item.to_dict() for item in recommendation_catalogue()],
         }
 

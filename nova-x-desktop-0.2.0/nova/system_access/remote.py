@@ -15,6 +15,7 @@ import hmac
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import uuid
@@ -137,7 +138,7 @@ class ServerRegistryAndAdmin:
         clean = hostname.strip("[]")
         return clean if int(port) == 22 else f"[{clean}]:{int(port)}"
 
-    def scan_server_host_key(self, hostname: str, port: int = 22, *, timeout: float = 5.0) -> dict[str, Any]:
+    def scan_server_host_key(self, hostname: str, port: int = 22, *, timeout: float = 5.0, key_types: str = "ed25519,ecdsa,rsa") -> dict[str, Any]:
         """Probe a server's current public host key via `ssh-keyscan` for operator verification."""
         if not _SAFE_HOST_RE.match(hostname):
             return {"ok": False, "reason": "Invalid hostname."}
@@ -145,7 +146,7 @@ class ServerRegistryAndAdmin:
         if not Path(keyscan).exists():
             return {"ok": False, "reason": "`ssh-keyscan` is not installed."}
         proc = subprocess.run(
-            [keyscan, "-T", str(max(1, int(timeout))), "-p", str(int(port)), hostname.strip("[]")],
+            [keyscan, "-t", key_types, "-T", str(max(1, int(timeout))), "-p", str(int(port)), hostname.strip("[]")],
             capture_output=True,
             text=True,
             timeout=timeout + 2.0,
@@ -261,7 +262,9 @@ class ServerRegistryAndAdmin:
 
     def verify_pinned_host_identity(self, srv: dict[str, Any]) -> dict[str, Any]:
         """Verify live server SSH host key matches pinned fingerprint; reject unexpected identity."""
-        live = self.scan_server_host_key(srv["hostname"], srv["port"], timeout=4.0)
+        kh_entry = str((srv.get("metadata") or {}).get("known_hosts_entry") or "")
+        ktype = "ed25519" if "ssh-ed25519" in kh_entry else ("ecdsa" if "ecdsa-" in kh_entry else ("rsa" if "ssh-rsa" in kh_entry else "ed25519,ecdsa,rsa"))
+        live = self.scan_server_host_key(srv["hostname"], srv["port"], timeout=4.0, key_types=ktype)
         if not live.get("ok"):
             return {"ok": False, "status": "unreachable", "reason": live.get("reason", "Connection failed")}
         if live["fingerprint"] != srv["host_key_fingerprint"]:
@@ -490,13 +493,61 @@ class ServerRegistryAndAdmin:
 
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_sec + 5, check=False)
         ok = proc.returncode == 0
-        err_clean = self.redactor.scrub_text((proc.stderr or "").strip(), max_chars=500)
+        err_text = (proc.stderr or "").strip()
+        exit_code = proc.returncode
+
+        # Fallback 1: Legacy SCP protocol (`scp -O`) when SFTP subsystem is absent/restricted
+        if not ok:
+            argv_legacy = [scp_bin, "-O", *argv[1:]]
+            proc_leg = subprocess.run(argv_legacy, capture_output=True, text=True, timeout=timeout_sec + 5, check=False)
+            if proc_leg.returncode == 0:
+                ok = True
+                exit_code = 0
+                err_text = ""
+
+        # Fallback 2: Authenticated binary SSH stream (`StrictHostKeyChecking=yes` + pinned `UserKnownHostsFile`)
+        # for minimal/AppArmor-confined hosts where `internal-sftp` cannot access the target path directly.
+        if not ok:
+            ssh_bin = shutil.which("ssh") or "/usr/bin/ssh"
+            ssh_opts = self._build_ssh_base_args(srv, timeout_sec=timeout_sec, for_scp_sftp=False)
+            quoted_remote = shlex.quote(remote_path)
+            if direction == "upload":
+                raw_in = lp.read_bytes()
+                sproc = subprocess.run(
+                    [ssh_bin, *ssh_opts, f"{srv['username']}@{srv['hostname']}", f"cat > {quoted_remote}"],
+                    input=raw_in,
+                    capture_output=True,
+                    timeout=timeout_sec + 5,
+                    check=False,
+                )
+                if sproc.returncode == 0:
+                    ok = True
+                    exit_code = 0
+                    err_text = ""
+                else:
+                    err_text = err_text or sproc.stderr.decode("utf-8", errors="replace").strip()
+            else:
+                sproc = subprocess.run(
+                    [ssh_bin, *ssh_opts, f"{srv['username']}@{srv['hostname']}", f"cat < {quoted_remote}"],
+                    capture_output=True,
+                    timeout=timeout_sec + 5,
+                    check=False,
+                )
+                if sproc.returncode == 0:
+                    lp.write_bytes(sproc.stdout)
+                    ok = True
+                    exit_code = 0
+                    err_text = ""
+                else:
+                    err_text = err_text or sproc.stderr.decode("utf-8", errors="replace").strip()
+
+        err_clean = self.redactor.scrub_text(err_text, max_chars=500)
         run_rec = self.db.add_remote_task_run(
             {
                 "server_id": srv["id"],
                 "operation": f"scp.{direction}",
                 "command_summary": f"{direction} {lp.name} <-> {remote_path}",
-                "exit_code": proc.returncode,
+                "exit_code": exit_code,
                 "status": "succeeded" if ok else "failed",
                 "output_excerpt": f"bytes={lp.stat().st_size}" if (ok and lp.exists()) else "",
                 "error_excerpt": err_clean,

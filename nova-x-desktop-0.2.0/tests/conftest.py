@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,16 @@ import pytest
 from nova.config import Settings
 from nova.db import Database
 from nova.tools import ToolRegistry, build_calculator_tool, build_research_tool, build_workspace_tools
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    if report.failed and os.environ.get("GITHUB_ACTIONS") == "true":
+        detail = str(report.longreprtext or report.longrepr or "failed").splitlines()
+        tail = " | ".join(line.strip() for line in detail[-8:] if line.strip())[:900]
+        print(
+            f"::error title=Pytest failure::{report.nodeid} ({report.when}): {tail}",
+            file=sys.stderr,
+        )
 
 
 class FakeProvider:

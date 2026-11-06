@@ -25,6 +25,7 @@ Contents:
   docs/RELEASE_CHECKLIST.md
   docs/ROADMAP.md
   docs/SECURITY.md
+  docs/SELF_ENGINEERING_ENGINE.md
   docs/SYSTEM_ACCESS.md
   docs/TESTING.md
   docs/UNIFIED_OS.md
@@ -137,6 +138,14 @@ Contents:
   nova/resources.py
   nova/sandbox.py
   nova/sandbox_child.py
+  nova/self_engineering/__init__.py
+  nova/self_engineering/acceptance.py
+  nova/self_engineering/assistant_deps_roadmap.py
+  nova/self_engineering/code_intel_and_arch.py
+  nova/self_engineering/modification_modules_perf.py
+  nova/self_engineering/recovery_launcher.py
+  nova/self_engineering/scale_storage_release_qa.py
+  nova/self_engineering/service.py
   nova/self_improvement.py
   nova/system_access/__init__.py
   nova/system_access/acceptance.py
@@ -161,6 +170,7 @@ Contents:
   nova/tools/privacy_intel.py
   nova/tools/registry.py
   nova/tools/research.py
+  nova/tools/self_engineering.py
   nova/tools/system_access.py
   nova/tools/workspace.py
   nova/unified_os.py
@@ -209,6 +219,7 @@ Contents:
   tests/test_privacy_intel_module.py
   tests/test_provider.py
   tests/test_regressions.py
+  tests/test_self_engineering_engine.py
   tests/test_system_access_expansion.py
   tests/test_tools.py
   tests/test_unified_os_acceptance.py
@@ -285,6 +296,12 @@ Notes:
     docs/NEXT_GEN_CYBER_INTELLIGENCE.md and verified by
     `python -m nova.cyber_intelligence.acceptance` (20 acceptance checks) and
     tests/test_next_gen_cyber_intelligence.py.
+  * The §276–§295 Autonomous Architecture, Source Code Evolution, and
+    Self-Engineering Engine lives in nova/self_engineering/ and
+    nova/tools/self_engineering.py, documented in
+    docs/SELF_ENGINEERING_ENGINE.md and verified by
+    `python -m nova.self_engineering.acceptance` (20 acceptance checks) and
+    tests/test_self_engineering_engine.py.
   * Pytest configuration lives only in pyproject.toml ([tool.pytest.ini_options]);
     the duplicate pytest.ini that used to shadow it has been removed.
   * Lint configuration lives in pyproject.toml ([tool.ruff]).
